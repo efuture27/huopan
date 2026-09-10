@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>货盘助手 · Vue3 + Element Plus DEMO</title>
+<!-- Vue3 + Element Plus + Icons (CDN 免构建) -->
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/element-plus@2.7.6/dist/index.full.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/element-plus@2.7.6/dist/index.css" />
+<script src="https://cdn.jsdelivr.net/npm/@element-plus/icons-vue@2.3.1/dist/index.iife.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/element-plus@2.7.6/dist/locale/zh-cn.min.js"></script>
+<!-- Excel: SheetJS 解析 / ExcelJS 导出(含图片) -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.3.0/dist/exceljs.min.js"></script>
+<style>
+  body{margin:0;font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;background:#f5f6fb;color:#1f2330}
+  #app{max-width:1200px;margin:0 auto;padding:20px}
+  .hero{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap}
+  .hero h1{font-size:20px;margin:0}
+  .hero p{margin:4px 0 0;color:#909399;font-size:13px}
+  .logo{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#7c3aed,#ec4899);
+    color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:18px}
+  .card{background:#fff;border-radius:16px;box-shadow:0 8px 30px rgba(31,35,48,.08);padding:20px;margin-top:14px}
+  .align-note{font-size:12px;color:#909399;background:#faf9ff;border:1px dashed #e3def7;border-radius:10px;padding:10px 12px;margin-top:12px;line-height:1.7}
+  .align-note code{background:#efeafc;padding:1px 5px;border-radius:5px;color:#6d28d9}
+  .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:14px}
+  .stat{background:#faf9ff;border:1px solid #ececf3;border-radius:12px;padding:14px}
+  .stat .k{font-size:12px;color:#909399;font-weight:600}
+  .stat .v{font-size:20px;font-weight:800;margin-top:4px}
+  .img-cell{width:46px;height:46px;border-radius:8px;object-fit:cover}
+  .foot{text-align:center;color:#909399;font-size:12px;margin-top:24px;line-height:1.7}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* =========================================================================
+ * 货盘助手 DEMO — Vue3 + Element Plus（CDN 免构建版）
+ * 对齐技术设计文档 V1.0：字段 / API 契约 / 表结构（§4-§6）
+ * =========================================================================
+ * // ---- TypeScript 类型定义（对应设计文档 §5 表结构，实际 TS 项目移入 .ts/.vue）----
+ * interface Product { id:number; sku:string; name:string; image_url:string;
+ *   cost_price:number; category:string; remark:string; create_time:string }
+ * interface User { id:number; username:string; password:string; role:string; status:number }
+ * interface ProductPlan { id:number; name:string; creator:string; create_time:string }
+ * interface ProductPlanItem { id:number; plan_id:number; product_id:number;
+ *   pricing_mode:'price'|'margin'; sale_price:number; profit:number; profit_rate:number }
+ * interface ProfitCalcReq { cost:number; sale_price:number }
+ * interface ProfitCalcRes { profit:number; profit_rate:number }
+ * interface PriceReq { cost:number; target_rate:number }   // target_rate 为小数 0~1
+ * interface PriceRes { sale_price:number }
+ * ========================================================================= */
+
+const { createApp, ref, reactive, computed } = Vue;
+const Msg = ElementPlus.ElMessage;
+const Icons = ElementPlusIconsVue;
+
+// ---- 前端 service 层：对齐设计文档 §6 API（DEMO 用 mock，真实部署替换为 axios/fetch 调用 FastAPI）----
+const api = {
+  // POST /api/product/upload  → 后端 openpyxl+pandas 解析并写 PostgreSQL product 表
+  uploadProduct: async (file) => ({ ok:true }),
+  // GET  /api/product/list
+  listProducts: async () => ({ rows: [] }),
+  // POST /api/profit/calculate  {cost,sale_price} → {profit,profit_rate}
+  calculateProfit: (cost, sale_price) => {
+    const profit = sale_price - cost;
+    const profit_rate = sale_price > 0 ? +(profit / sale_price * 100).toFixed(2) : 0;
+    return { profit, profit_rate };
+  },
+  // POST /api/profit/price  {cost,target_rate} → {sale_price}  (公式：售价=成本÷(1-目标利润率))
+  calculatePrice: (cost, target_rate) => {
+    const sale_price = target_rate >= 1 ? cost : +(cost / (1 - target_rate)).toFixed(2);
+    return { sale_price };
+  },
+  // POST /api/plan/generate  → 后端调用 LLM(DeepSeek/Qwen/GPT) 生成标题/描述/卖点，openpyxl 生成货盘.xlsx
+  generatePlan: async (payload) => ({ ok:true, title: payload.title })
+};
+
+// ---- 工具 ----
+const fmt = (n) => (Math.round(n * 100) / 100).toLocaleString('zh-CN');
+const marginWord = (m) => (m >= 50 ? '优' : m >= 30 ? '中' : '偏低');
+const marginType = (m) => (m >= 50 ? 'success' : m >= 30 ? 'warning' : 'danger');
+
+// 示例商品图：canvas 生成 PNG（自包含，无外链）
+const CAT_COLORS = { '上衣':['#a78bfa','#7c3aed'], '裤装':['#60a5fa','#2563eb'],
+  '裙装':['#f472b6','#db2777'], '外套':['#34d399','#059669'], '其他':['#fbbf24','#d97706'] };
+function makeImg(name, category){
+  const c = document.createElement('canvas'); c.width = 300; c.height = 300;
+  const ctx = c.getContext('2d');
+  const col = CAT_COLORS[category] || CAT_COLORS['其他'];
+  const g = ctx.createLinearGradient(0,0,300,300); g.addColorStop(0,col[0]); g.addColorStop(1,col[1]);
+  ctx.fillStyle = g; ctx.fillRect(0,0,300,300);
+  ctx.fillStyle = 'rgba(255,255,255,.12)';
+  ctx.beginPath(); ctx.arc(235,70,70,0,7); ctx.fill();
+  ctx.beginPath(); ctx.arc(60,250,50,0,7); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.font = '600 18px "PingFang SC",sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText(category || '商品', 24, 44);
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = '800 26px "PingFang SC",sans-serif';
+  const words = name.split(''); const lines = []; let line = '';
+  words.forEach(ch => { if ((line+ch).length > 5) { lines.push(line); line = ch; } else line += ch; });
+  if (line) lines.push(line);
+  lines.slice(0,3).forEach((l,i) => ctx.fillText(l, 150, 150 + i*34));
+  return c.toDataURL('image/png');
+}
+
+// AI 文案 mock（设计文档 §4.5：标题/描述/卖点）
+const POOL = {
+  '上衣':['亲肤透气面料','修身显瘦版型','基础百搭易衬','通勤休闲两宜'],
+  '裤装':['高腰显腿长','垂感顺滑不塌','舒适无束缚','修饰腿型利落'],
+  '裙装':['优雅气质拉满','A字显瘦遮肉','仙女氛围感','垂坠有型'],
+  '外套':['挺括有型','防风保暖','气质叠穿利器','质感高级'],
+  '其他':['性价比之选','当季热推','细节考究','易搭配']
+};
+function callAIPlan(p, idx){
+  const pool = POOL[p.category] || POOL['其他'];
+  const pick = [pool[idx % pool.length], pool[(idx+1) % pool.length], pool[(idx+2) % pool.length]];
+  return {
+    description: `【${p.name}】${p.category}精选单品，${pick[0]}，${pick[1]}，适配多场景穿搭，是当季高性价比之选。`,
+    sellingPoints: pick.join(' / '),
+    title: `${p.category}精选货盘 · 共${idx+1}款 · 智能生成`
+  };
+}
+function downloadBlob(blob, name){
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+createApp({
+  template: `
+  <div>
+  <div class="hero">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="logo">AI</div>
+      <div>
+        <h1>货盘助手</h1>
+        <p>Vue3 + TypeScript + Element Plus · 技术设计文档 V1.0 对齐 DEMO（前端 mock，免构建即时预览）</p>
+      </div>
+    </div>
+    <div>
+      <el-button @click="filesVisible=true" :icon="Folder">文件管理</el-button>
+      <el-button type="primary" @click="goStep(hasProducts?1:0)" :icon="MagicStick">开始制作</el-button>
+    </div>
+  </div>
+
+  <el-steps :active="active" finish-status="success" align-center>
+    <el-step title="商品库" description="上传 / 模板" />
+    <el-step title="选择商品" description="搜索 / 筛选" />
+    <el-step title="商品定价" description="售价 / 利润率" />
+    <el-step title="利润预览" description="实时核算" />
+    <el-step title="生成货盘" description="AI 导出 Excel" />
+  </el-steps>
+
+  <!-- STEP 0 商品库 -->
+  <div class="card" v-show="active===0">
+    <h2 style="margin:0 0 4px;font-size:17px">① 商品库管理</h2>
+    <p style="color:#909399;font-size:13px;margin:0 0 16px">上传商品库 Excel（图片 / SKU / 商品名称 / 成本价 / 分类 / 备注），或先体验内置示例商品库。</p>
+    <el-upload drag :auto-upload="false" :show-file-list="false" accept=".xlsx,.xls" :on-change="onUploadChange">
+      <el-icon style="font-size:46px;color:#c0c4cc"><UploadFilled /></el-icon>
+      <div style="margin-top:8px">将 Excel 拖到此处，或 <em style="color:#7c3aed">点击上传</em></div>
+      <div style="font-size:12px;color:#c0c4cc">支持 .xlsx / .xls，自动识别表头字段</div>
+    </el-upload>
+    <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">
+      <el-button :icon="Download" @click="exportTemplate">下载模板</el-button>
+      <el-button :icon="MagicStick" @click="loadSample">载入示例库</el-button>
+      <el-tag type="info" style="margin-left:auto">商品库：{{ products.length }} 个</el-tag>
+    </div>
+    <div class="align-note">
+      字段对齐设计文档 §4.1：<code>image / sku / name / cost_price / category / remark</code>。
+      Excel 解析对应后端 <code>openpyxl + pandas</code>（本 DEMO 用 SheetJS 在浏览器端模拟 <code>POST /api/product/upload</code>）。
+    </div>
+    <div style="margin-top:16px;text-align:right">
+      <el-button type="primary" :disabled="!hasProducts" @click="goStep(1)">下一步：选择商品 →</el-button>
+    </div>
+  </div>
+
+  <!-- STEP 1 选择商品 -->
+  <div class="card" v-show="active===1">
+    <h2 style="margin:0 0 4px;font-size:17px">② 商品选择</h2>
+    <p style="color:#909399;font-size:13px;margin:0 0 16px">从商品库勾选进入货盘的商品，支持搜索与分类筛选（设计文档 §4.2）。</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
+      <el-input v-model="search" placeholder="搜索商品名称 / SKU" :prefix-icon="Search" style="width:260px" clearable />
+      <el-select v-model="catFilter" placeholder="全部分类" clearable style="width:160px">
+        <el-option v-for="c in categories" :key="c" :label="c" :value="c" />
+      </el-select>
+      <el-button @click="selectAllFiltered">全选</el-button>
+      <el-button @click="selectedSkus=[]">清空</el-button>
+      <el-tag type="success" style="margin-left:auto">已选 {{ selectedSkus.length }} 个</el-tag>
+    </div>
+    <el-table :data="filtered" border stripe max-height="420" row-key="sku">
+      <el-table-column width="50" align="center">
+        <template #header>
+          <el-checkbox :model-value="allFilteredSelected" @change="toggleAllFiltered" />
+        </template>
+        <template #default="{row}">
+          <el-checkbox :model-value="selectedSkus.includes(row.sku)" @change="(v)=>toggleSel(row,v)" />
+        </template>
+      </el-table-column>
+      <el-table-column label="图片" width="70" align="center">
+        <template #default="{row}"><el-image :src="row.img" class="img-cell" fit="cover" :preview-src-list="[row.img]" /></template>
+      </el-table-column>
+      <el-table-column prop="sku" label="SKU" width="110" />
+      <el-table-column prop="name" label="商品名称" min-width="140" />
+      <el-table-column label="分类" width="100"><template #default="{row}"><el-tag size="small">{{ row.category }}</el-tag></template></el-table-column>
+      <el-table-column prop="cost_price" label="成本价" width="90" align="right">
+        <template #default="{row}">¥{{ row.cost_price }}</template>
+      </el-table-column>
+    </el-table>
+    <div style="margin-top:16px;display:flex;justify-content:space-between">
+      <el-button @click="goStep(0)">← 返回</el-button>
+      <el-button type="primary" :disabled="!selectedSkus.length" @click="goStep(2)">下一步：商品定价 →</el-button>
+    </div>
+  </div>
+
+  <!-- STEP 2 定价 -->
+  <div class="card" v-show="active===2">
+    <h2 style="margin:0 0 4px;font-size:17px">③ 商品定价</h2>
+    <p style="color:#909399;font-size:13px;margin:0 0 16px">两种模式（设计文档 §4.3）：按售价算利润，或按目标利润率反推售价。</p>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+      <el-radio-group v-model="mode">
+        <el-radio-button value="price">按销售价格</el-radio-button>
+        <el-radio-button value="margin">按目标利润率</el-radio-button>
+      </el-radio-group>
+      <span style="color:#909399;font-size:13px">批量：</span>
+      <el-input-number v-model="batchVal" :min="0" :step="mode==='price'?1:5" controls-position="right" style="width:150px" :placeholder="mode==='price'?'售价如 199':'利润率如 60'" />
+      <el-button @click="batchApply">应用到已选</el-button>
+    </div>
+    <el-table :data="selectedProducts" border stripe max-height="420">
+      <el-table-column label="图片" width="70" align="center">
+        <template #default="{row}"><el-image :src="row.img" class="img-cell" fit="cover" :preview-src-list="[row.img]" /></template>
+      </el-table-column>
+      <el-table-column prop="sku" label="SKU" width="110" />
+      <el-table-column prop="name" label="商品名称" min-width="140" />
+      <el-table-column prop="cost_price" label="成本价" width="90" align="right">
+        <template #default="{row}">¥{{ row.cost_price }}</template>
+      </el-table-column>
+      <el-table-column :label="mode==='price'?'销售价(元)':'目标利润率(%)'" width="180">
+        <template #default="{row}">
+          <el-input-number v-model="pricing[row.sku]" :min="0" :step="mode==='price'?1:1" controls-position="right" style="width:150px" />
+        </template>
+      </el-table-column>
+      <el-table-column label="利润" width="100" align="right">
+        <template #default="{row}">{{ priced(row.sku)?'¥'+fmt(compute(row.sku).profit):'—' }}</template>
+      </el-table-column>
+      <el-table-column label="利润率" width="160">
+        <template #default="{row}">
+          <el-tag v-if="priced(row.sku)" :type="marginType(compute(row.sku).marginPct)" effect="light">
+            {{ fmt(compute(row.sku).marginPct) }}% · {{ marginWord(compute(row.sku).marginPct) }}
+          </el-tag>
+          <span v-else style="color:#c0c4cc">—</span>
+        </template>
+      </el-table-column>
+    </el-table>
+    <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">
+      <el-tag type="info">已定价 {{ pricedCount }} / {{ selectedSkus.length }}</el-tag>
+      <div>
+        <el-button @click="goStep(1)">← 返回</el-button>
+        <el-button type="primary" :disabled="!allPriced" @click="goStep(3)">下一步：利润预览 →</el-button>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 3 预览 -->
+  <div class="card" v-show="active===3">
+    <h2 style="margin:0 0 4px;font-size:17px">④ 利润率实时预览</h2>
+    <p style="color:#909399;font-size:13px;margin:0 0 16px">
+      利润率 = 利润 ÷ 销售价。颜色：<el-tag type="success" size="small" effect="light">≥50% 优</el-tag>
+      <el-tag type="warning" size="small" effect="light" style="margin:0 4px">30%-50% 中</el-tag>
+      <el-tag type="danger" size="small" effect="light">&lt;30% 偏低</el-tag>
+    </p>
+    <el-table :data="previewRows" border stripe max-height="420">
+      <el-table-column label="图片" width="70" align="center">
+        <template #default="{row}"><el-image :src="row.img" class="img-cell" fit="cover" :preview-src-list="[row.img]" /></template>
+      </el-table-column>
+      <el-table-column prop="sku" label="SKU" width="110" />
+      <el-table-column prop="name" label="商品名称" min-width="140" />
+      <el-table-column label="成本价" width="90" align="right"><template #default="{row}">¥{{ fmt(row.cost) }}</template></el-table-column>
+      <el-table-column label="销售价" width="100" align="right"><template #default="{row}">¥{{ fmt(row.price) }}</template></el-table-column>
+      <el-table-column label="利润" width="100" align="right"><template #default="{row}">¥{{ fmt(row.profit) }}</template></el-table-column>
+      <el-table-column label="利润率" width="120">
+        <template #default="{row}"><el-tag :type="marginType(row.marginPct)" effect="light">{{ fmt(row.marginPct) }}%</el-tag></template>
+      </el-table-column>
+    </el-table>
+    <div class="summary-grid">
+      <div class="stat"><div class="k">商品数量</div><div class="v">{{ previewRows.length }}</div></div>
+      <div class="stat"><div class="k">总成本</div><div class="v">¥{{ fmt(summary.cost) }}</div></div>
+      <div class="stat"><div class="k">总售价</div><div class="v">¥{{ fmt(summary.price) }}</div></div>
+      <div class="stat"><div class="k">总利润</div><div class="v" style="color:#10b981">¥{{ fmt(summary.profit) }}</div></div>
+      <div class="stat"><div class="k">平均利润率</div><div class="v">{{ fmt(summary.avg) }}%</div></div>
+    </div>
+    <div style="margin-top:16px;display:flex;justify-content:space-between">
+      <el-button @click="goStep(2)">← 返回</el-button>
+      <el-button type="primary" @click="goStep(4)">下一步：生成货盘 →</el-button>
+    </div>
+  </div>
+
+  <!-- STEP 4 生成 -->
+  <div class="card" v-show="active===4">
+    <h2 style="margin:0 0 4px;font-size:17px">⑤ AI 生成货盘 Excel</h2>
+    <p style="color:#909399;font-size:13px;margin:0 0 16px">AI 生成货盘标题、商品描述与卖点，并导出标准化货盘（设计文档 §4.5 / §4.6）。</p>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+      <div><div style="font-size:12px;color:#909399;margin-bottom:5px">货盘文件名称</div>
+        <el-input v-model="fileName" style="width:240px" />
+      </div>
+      <div style="flex:1;min-width:240px"><div style="font-size:12px;color:#909399;margin-bottom:5px">货盘标题（AI 生成）</div>
+        <el-input v-model="docTitle" readonly placeholder="点击生成后自动填充" />
+      </div>
+    </div>
+    <div class="align-note">
+      本 DEMO 的「AI 生成」为 <code>callAIPlan()</code> mock（基于分类+卖点库规则），预留真实 LLM 替换点
+      <code>POST /api/plan/generate</code>（DeepSeek / Qwen / GPT）。导出对应后端 <code>openpyxl</code>（本 DEMO 用 ExcelJS 在浏览器端模拟，含图片）。
+    </div>
+    <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">
+      <el-tag type="info">待生成：{{ selectedSkus.length }} 个商品</el-tag>
+      <div>
+        <el-button @click="goStep(3)">← 返回</el-button>
+        <el-button type="primary" :loading="generating" :icon="MagicStick" @click="generate">
+          {{ generating?'AI 生成中…':'AI 生成并导出 Excel' }}
+        </el-button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 文件管理 -->
+  <el-dialog v-model="filesVisible" title="📁 文件管理" width="660px">
+    <el-table :data="generated" border stripe>
+      <el-table-column prop="name" label="文件名称" min-width="160" />
+      <el-table-column prop="time" label="生成时间" width="160" />
+      <el-table-column prop="rows" label="商品数" width="80" align="center" />
+      <el-table-column label="操作" width="160" align="center">
+        <template #default="{row}">
+          <el-button size="small" :icon="Download" @click="downloadGen(row)">下载</el-button>
+          <el-button size="small" type="danger" :icon="Delete" @click="deleteGen(row)">删除</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+    <el-empty v-if="!generated.length" description="暂无生成记录" />
+    <template #footer><el-button @click="filesVisible=false">关闭</el-button></template>
+  </el-dialog>
+
+  <div class="foot">
+    货盘助手 · 技术设计文档 V1.0 对齐 DEMO &nbsp;|&nbsp; 前端 Vue3 + Element Plus（CDN）· 后端 mock<br/>
+    前端 service 层对齐 API：/api/product/upload · /api/product/list · /api/profit/calculate · /api/profit/price · /api/plan/generate
+  </div>
+  </div>
+  `,
+  setup(){
+    const active = ref(0);
+    const products = ref([]);                       // Product[]
+    const selectedSkus = ref([]);                   // string[]
+    const mode = ref('price');                      // 'price' | 'margin'
+    const pricing = reactive({});                   // { [sku]: number }
+    const search = ref('');
+    const catFilter = ref('');
+    const batchVal = ref(null);
+    const fileName = ref('春季女装货盘');
+    const docTitle = ref('');
+    const generated = ref([]);                      // ProductPlan[] (前端 mock)
+    const filesVisible = ref(false);
+    const generating = ref(false);
+
+    const hasProducts = computed(() => products.value.length > 0);
+    const categories = computed(() => [...new Set(products.value.map(p => p.category))]);
+    const filtered = computed(() => {
+      const q = search.value.trim().toLowerCase();
+      return products.value.filter(p => {
+        if (catFilter.value && p.category !== catFilter.value) return false;
+        if (q && !(p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q))) return false;
+        return true;
+      });
+    });
+    const allFilteredSelected = computed(() =>
+      filtered.value.length > 0 && filtered.value.every(p => selectedSkus.value.includes(p.sku)));
+    const selectedProducts = computed(() =>
+      products.value.filter(p => selectedSkus.value.includes(p.sku)));
+
+    // 核心计算（对齐 /api/profit/calculate 与 /api/profit/price）
+    function compute(sku){
+      const p = products.value.find(x => x.sku === sku); if (!p) return null;
+      const cost = Number(p.cost_price) || 0;
+      const raw = pricing[sku];
+      if (mode.value === 'price'){
+        const sale_price = Number(raw) || 0;
+        const r = api.calculateProfit(cost, sale_price);
+        return { cost, price: sale_price, profit: r.profit, marginPct: r.profit_rate };
+      } else {
+        const target = Number(raw) || 0;            // 百分比
+        const r = api.calculatePrice(cost, target/100);
+        return { cost, price: r.sale_price, profit: r.sale_price - cost, marginPct: target };
+      }
+    }
+    const priced = (sku) => Number(pricing[sku]) > 0;
+    const pricedCount = computed(() => selectedSkus.value.filter(s => priced(s)).length);
+    const allPriced = computed(() => selectedSkus.value.length > 0 && pricedCount.value === selectedSkus.value.length);
+
+    const previewRows = computed(() => selectedProducts.value.map(p => {
+      const c = compute(p.sku);
+      return { sku:p.sku, name:p.name, img:p.img, cost:c.cost, price:c.price, profit:c.profit, marginPct:c.marginPct };
+    }));
+    const summary = computed(() => {
+      const rows = previewRows.value;
+      const cost = rows.reduce((s,r) => s + r.cost, 0);
+      const price = rows.reduce((s,r) => s + r.price, 0);
+      const profit = price - cost;
+      const avg = price > 0 ? profit / price * 100 : 0;
+      return { cost, price, profit, avg };
+    });
+
+    function toggleSel(row, v){ v ? addSel(row.sku) : removeSel(row.sku); }
+    function addSel(sku){ if (!selectedSkus.value.includes(sku)) selectedSkus.value.push(sku); }
+    function removeSel(sku){ selectedSkus.value = selectedSkus.value.filter(s => s !== sku); }
+    function toggleAllFiltered(v){ filtered.value.forEach(p => v ? addSel(p.sku) : removeSel(p.sku)); }
+    function selectAllFiltered(){ filtered.value.forEach(p => addSel(p.sku)); }
+
+    function batchApply(){
+      if (batchVal.value == null) { Msg.warning('请输入批量数值'); return; }
+      selectedSkus.value.forEach(s => pricing[s] = batchVal.value);
+      Msg.success('已应用到 ' + selectedSkus.value.length + ' 个商品');
+    }
+
+    function loadSample(){
+      const base = [
+        ['针织开衫','A001',80,'上衣'],['雪纺衬衫','A003',55,'上衣'],['纯棉T恤','A007',35,'上衣'],
+        ['亚麻裤','A002',65,'裤装'],['高腰阔腿裤','A008',75,'裤装'],
+        ['百褶半裙','A004',70,'裙装'],['牛仔连衣裙','A006',95,'裙装'],
+        ['风衣外套','A005',120,'外套']
+      ];
+      products.value = base.map(([name, sku, cost_price, category]) => ({
+        sku, name, cost_price, category, remark:'示例数据', image_url:'', img: makeImg(name, category)
+      }));
+      selectedSkus.value = products.value.map(p => p.sku);
+      products.value.forEach(p => pricing[p.sku] = Math.round(p.cost_price * 2.5));
+      Msg.success('已载入示例商品库（' + products.value.length + ' 个）');
+    }
+
+    function onUploadChange(file){
+      const raw = file.raw; if (!raw) return;
+      if (typeof XLSX === 'undefined') { Msg.error('SheetJS 未加载（需联网）'); return; }
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const wb = XLSX.read(e.target.result, { type:'array' });
+          const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval:'' });
+          const prods = rows.map(r => {
+            const name = r['商品名称'] || r['name'] || '';
+            const sku = r['SKU'] || r['sku'] || '';
+            const cost_price = Number(r['成本价'] || r['cost_price'] || 0);
+            const category = r['分类'] || r['category'] || '其他';
+            const remark = r['备注'] || r['remark'] || '';
+            let img = r['图片'] || r['image'] || r['商品图片'] || '';
+            if (img && !/^data:|^https?:\/\//.test(img)) img = '';
+            if (!img) img = makeImg(name || '商品', category);
+            return { name, sku, cost_price, category, remark, image_url:'', img };
+          }).filter(p => p.name && p.sku);
+          if (!prods.length) { Msg.error('未解析到有效商品，请检查表头'); return; }
+          products.value = prods;
+          selectedSkus.value = prods.map(p => p.sku);
+          Object.keys(pricing).forEach(k => delete pricing[k]);
+          prods.forEach(p => pricing[p.sku] = Math.round(p.cost_price * 2.5));
+          api.uploadProduct(raw);
+          Msg.success('已解析 ' + prods.length + ' 个商品');
+        } catch(err){ Msg.error('解析失败：' + err.message); }
+      };
+      reader.readAsArrayBuffer(raw);
+    }
+
+    function exportTemplate(){
+      if (typeof ExcelJS === 'undefined') { Msg.error('ExcelJS 未加载（需联网）'); return; }
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('商品库模板');
+      ws.columns = [
+        { header:'图片', width:24 },{ header:'SKU', width:14 },{ header:'商品名称', width:20 },
+        { header:'成本价', width:12 },{ header:'分类', width:12 },{ header:'备注', width:20 }
+      ];
+      ws.getRow(1).font = { bold:true };
+      ws.getRow(1).fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFF1ECFF' } };
+      ws.addRow(['（可填图片URL，留空自动生成占位图）','A001','示例针织开衫',80,'上衣','春季新款']);
+      ws.xlsx.writeBuffer().then(buf => {
+        downloadBlob(new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), '商品库模板.xlsx');
+        Msg.success('模板已下载');
+      });
+    }
+
+    async function exportExcel(){
+      const list = selectedProducts.value;
+      const wb = new ExcelJS.Workbook();
+      wb.creator = '货盘助手';
+      const ws = wb.addWorksheet('货盘');
+      ws.columns = [
+        { header:'图片', width:12 },{ header:'SKU', width:12 },{ header:'商品名称', width:20 },
+        { header:'分类', width:10 },{ header:'成本价', width:10 },{ header:'销售价', width:10 },
+        { header:'利润率', width:10 },{ header:'描述', width:46 },{ header:'卖点', width:30 }
+      ];
+      ws.getRow(1).font = { bold:true };
+      ws.getRow(1).fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFF1ECFF' } };
+      let r = 2;
+      list.forEach((p, i) => {
+        const c = compute(p.sku);
+        const ai = callAIPlan(p, i);
+        const marginPct = mode.value === 'margin' ? (Number(pricing[p.sku]) || 0) : c.marginPct;
+        ws.addRow(['', p.sku, p.name, p.category, Math.round(c.cost), Math.round(c.price),
+          fmt(marginPct) + '%', ai.description, ai.sellingPoints]);
+        ws.getRow(r).height = 58;
+        try {
+          const b64 = p.img.split(',')[1];
+          const id = wb.addImage({ base64:b64, extension:'png' });
+          ws.addImage(id, { tl:{ col:0, row:r-1 }, ext:{ width:54, height:54 } });
+        } catch(e){}
+        r++;
+      });
+      const buf = await wb.xlsx.writeBuffer();
+      return new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    }
+
+    async function generate(){
+      generating.value = true;
+      await new Promise(r => setTimeout(r, 900));
+      const list = selectedProducts.value;
+      const fname = (fileName.value || '春季女装货盘') + '.xlsx';
+      docTitle.value = `${list[0] ? list[0].category : ''}精选货盘 · 共${list.length}款 · ${new Date().toLocaleDateString('zh-CN')}`;
+      try {
+        api.generatePlan({ title: docTitle.value, items: list.length });
+        const blob = await exportExcel();
+        const url = URL.createObjectURL(blob);
+        generated.value.push({ id:'g'+Date.now(), name:fname, time:new Date().toLocaleString('zh-CN'), rows:list.length, url });
+        downloadBlob(blob, fname);
+        Msg.success('货盘已生成并下载：' + fname);
+      } catch(err){ Msg.error('导出失败：' + err.message); }
+      generating.value = false;
+    }
+    function downloadGen(row){ const a = document.createElement('a'); a.href = row.url; a.download = row.name; a.click(); }
+    function deleteGen(row){ generated.value = generated.value.filter(x => x.id !== row.id); Msg.success('已删除'); }
+
+    function goStep(n){ active.value = n; window.scrollTo({ top:0, behavior:'smooth' }); }
+
+    return {
+      active, products, selectedSkus, mode, pricing, search, catFilter, batchVal,
+      fileName, docTitle, generated, filesVisible, generating,
+      hasProducts, categories, filtered, allFilteredSelected, selectedProducts,
+      priced, pricedCount, allPriced, previewRows, summary,
+      compute, marginWord, marginType, fmt,
+      toggleSel, toggleAllFiltered, selectAllFiltered, batchApply,
+      loadSample, onUploadChange, exportTemplate, generate, downloadGen, deleteGen, goStep,
+      Folder, Download, MagicStick, UploadFilled, Search, Delete
+    };
+  }
+}).use(ElementPlus, window.ElementPlusLocaleZhCn ? { locale: window.ElementPlusLocaleZhCn } : {})
+  .mount('#app');
+</script>
+</body>
+</html>

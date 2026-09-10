@@ -1,0 +1,12 @@
+export ok: 6853 bytes
+title A1: '测试货盘（2026-08-28）'
+merged: ['A1:J1']
+header row2: ['图片', 'SKU', '商品名称', '商家', '分类', '成本价', '销售价', '利润率', '商品描述', '商品卖点']
+row3 first 3: [None, 'A001', '示例针织开衫']
+freeze: A3
+images: 1
+header font bold=True color=00FFFFFF fill=008B5CF6
+title font size=16.0 color=00FFFFFF fill=007C3AED
+reimport: 2 products
+first: sku=A001 name=示例针织开衫 merchant=某某服饰有限公司 cost=80.0
+img recovered: False

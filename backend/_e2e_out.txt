@@ -1,0 +1,6 @@
+login ok, token len=124
+file bytes=106027658
+upload resp={"ok": true, "inserted": 51} elapsed=2.7s
+list total=51 with_image=47
+sample: sku=51 name=贝贝南瓜 img_prefix=data:image/jpeg;base64,/9j/4AAQSkZJRgABA img_len=8399
+DONE

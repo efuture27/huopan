@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>货盘助手 · DEMO</title>
+<!-- SheetJS: Excel 解析 / 模板导出；ExcelJS: 带图片的货盘 Excel 导出 -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.3.0/dist/exceljs.min.js"></script>
+<style>
+  :root{
+    --bg:#f5f6fb; --panel:#ffffff; --ink:#1f2330; --sub:#6b7280;
+    --line:#ececf3; --brand:#7c3aed; --brand2:#ec4899;
+    --green:#10b981; --yellow:#f59e0b; --red:#ef4444;
+    --shadow:0 8px 30px rgba(31,35,48,.08);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:radial-gradient(1200px 600px at 10% -10%,#efe9ff 0,transparent 55%),
+               radial-gradient(1000px 500px at 110% 0,#ffe9f5 0,transparent 50%),var(--bg);
+    color:var(--ink);min-height:100vh}
+  a{color:inherit}
+  .wrap{max-width:1180px;margin:0 auto;padding:22px 20px 60px}
+  /* Header */
+  header.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}
+  .brand{display:flex;align-items:center;gap:12px}
+  .logo{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,var(--brand),var(--brand2));
+    display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:20px;box-shadow:var(--shadow)}
+  .brand h1{font-size:19px;margin:0;letter-spacing:.3px}
+  .brand p{margin:2px 0 0;font-size:12.5px;color:var(--sub)}
+  .top-actions{display:flex;gap:10px}
+  .btn{border:1px solid var(--line);background:#fff;color:var(--ink);padding:9px 15px;border-radius:10px;
+    cursor:pointer;font-size:13.5px;font-weight:600;transition:.15s;display:inline-flex;align-items:center;gap:7px}
+  .btn:hover{border-color:#d9d4f5;box-shadow:var(--shadow)}
+  .btn.primary{background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;border:none}
+  .btn.primary:hover{filter:brightness(1.05)}
+  .btn.ghost{background:transparent}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  /* Stepper */
+  .stepper{display:flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;padding:12px 14px;box-shadow:var(--shadow);margin-bottom:18px;overflow-x:auto}
+  .step{display:flex;align-items:center;gap:10px;padding:6px 12px;border-radius:10px;cursor:pointer;white-space:nowrap;transition:.15s}
+  .step:hover{background:#f7f5ff}
+  .step.active{background:#f1ecff}
+  .step .num{width:24px;height:24px;border-radius:50%;background:#ececf3;color:var(--sub);display:flex;
+    align-items:center;justify-content:center;font-size:12.5px;font-weight:700}
+  .step.active .num{background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff}
+  .step.done .num{background:var(--green);color:#fff}
+  .step .label{font-size:13px;font-weight:600}
+  .step .label small{display:block;font-weight:500;color:var(--sub);font-size:11px}
+  .sep{flex:0 0 14px;height:1px;background:var(--line)}
+  /* Card */
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:20px}
+  .card h2{margin:0 0 4px;font-size:17px}
+  .card .hint{color:var(--sub);font-size:13px;margin:0 0 16px}
+  .section{display:none}
+  .section.show{display:block;animation:fade .25s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  /* upload zone */
+  .drop{border:2px dashed #d9d4f5;background:#faf9ff;border-radius:14px;padding:26px;text-align:center;cursor:pointer;transition:.15s}
+  .drop:hover{background:#f3efff;border-color:var(--brand)}
+  .drop b{color:var(--brand)}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{font-size:12px;color:var(--sub);font-weight:600}
+  input[type=text],input[type=number]{border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:13.5px;outline:none;background:#fff}
+  input:focus{border-color:var(--brand)}
+  select{border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:13.5px;background:#fff;outline:none}
+  /* product grid */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:14px;margin-top:6px}
+  .pcard{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#fff;transition:.15s;position:relative}
+  .pcard:hover{box-shadow:var(--shadow);transform:translateY(-2px)}
+  .pcard.sel{border-color:var(--brand);box-shadow:0 0 0 2px #e9e1ff}
+  .pcard .img{height:150px;background:#f3f4f8;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .pcard .img img{width:100%;height:100%;object-fit:cover}
+  .pcard .meta{padding:10px 11px}
+  .pcard .name{font-size:13.5px;font-weight:700;margin:0 0 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pcard .sub{font-size:12px;color:var(--sub);display:flex;justify-content:space-between}
+  .pcard .chk{position:absolute;top:8px;left:8px;width:22px;height:22px;border-radius:7px;background:#fff;
+    border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff}
+  .pcard.sel .chk{background:var(--brand);border-color:var(--brand)}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;background:#f1ecff;color:var(--brand);font-weight:600}
+  /* pricing table */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+  th{font-size:12px;color:var(--sub);font-weight:700;background:#fafaff}
+  tbody tr:hover{background:#faf9ff}
+  .pill{display:inline-block;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:700}
+  .pill.g{background:#e7f8f1;color:var(--green)}
+  .pill.y{background:#fef4e2;color:var(--yellow)}
+  .pill.r{background:#fdeaea;color:var(--red)}
+  .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:16px}
+  .stat{background:#faf9ff;border:1px solid var(--line);border-radius:12px;padding:14px}
+  .stat .k{font-size:12px;color:var(--sub);font-weight:600}
+  .stat .v{font-size:20px;font-weight:800;margin-top:4px}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .seg button{border:none;background:#fff;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;color:var(--sub)}
+  .seg button.on{background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff}
+  /* modal */
+  .mask{position:fixed;inset:0;background:rgba(31,35,48,.45);display:none;align-items:center;justify-content:center;z-index:50;padding:20px}
+  .mask.show{display:flex}
+  .modal{background:#fff;border-radius:16px;max-width:460px;width:100%;padding:22px;box-shadow:var(--shadow)}
+  .modal h3{margin:0 0 6px;font-size:16px}
+  .modal p{color:var(--sub);font-size:13px;margin:0 0 16px}
+  .modal .acts{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
+  .bar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:18px;flex-wrap:wrap}
+  .empty{text-align:center;color:var(--sub);padding:40px 0;font-size:13.5px}
+  .gen-list{display:flex;flex-direction:column;gap:10px}
+  .gen-item{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--line);
+    border-radius:12px;padding:13px 15px;background:#fff}
+  .gen-item .l .t{font-weight:700;font-size:13.5px}
+  .gen-item .l .m{font-size:12px;color:var(--sub);margin-top:3px}
+  .gen-item .r{display:flex;gap:8px}
+  .ai-anim{display:inline-block;width:14px;height:14px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;margin-right:7px;vertical-align:-2px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .toast{position:fixed;left:50%;bottom:30px;transform:translateX(-50%) translateY(20px);background:#1f2330;color:#fff;
+    padding:11px 18px;border-radius:10px;font-size:13px;opacity:0;transition:.25s;z-index:80;pointer-events:none}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .foot{text-align:center;color:var(--sub);font-size:12px;margin-top:26px;line-height:1.7}
+  .note{font-size:12px;color:var(--sub);background:#faf9ff;border:1px dashed var(--line);border-radius:10px;padding:10px 12px;margin-top:14px;line-height:1.6}
+  @media(max-width:640px){.brand p{display:none}.stepper{padding:10px}.step .label small{display:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div class="logo">AI</div>
+      <div>
+        <h1>货盘助手</h1>
+        <p>商品库一次维护 · 选商品 · 定价格 · 一键生成专业货盘</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button class="btn ghost" id="navFiles">📁 文件管理</button>
+      <button class="btn primary" id="navStart">▶ 开始制作</button>
+    </div>
+  </header>
+
+  <!-- Stepper -->
+  <div class="stepper" id="stepper">
+    <div class="step" data-step="0"><div class="num">1</div><div class="label">商品库<small>上传 / 模板</small></div></div>
+    <div class="sep"></div>
+    <div class="step" data-step="1"><div class="num">2</div><div class="label">选择商品<small>搜索 / 筛选</small></div></div>
+    <div class="sep"></div>
+    <div class="step" data-step="2"><div class="num">3</div><div class="label">商品定价<small>售价 / 利润率</small></div></div>
+    <div class="sep"></div>
+    <div class="step" data-step="3"><div class="num">4</div><div class="label">利润预览<small>实时核算</small></div></div>
+    <div class="sep"></div>
+    <div class="step" data-step="4"><div class="num">5</div><div class="label">生成货盘<small>AI 导出 Excel</small></div></div>
+  </div>
+
+  <!-- ============ STEP 0: 商品库 ============ -->
+  <section class="section show" id="sec0">
+    <div class="card">
+      <h2>① 商品库管理</h2>
+      <p class="hint">上传商品库 Excel（含 商品图片 / SKU / 商品名称 / 成本价 / 分类 / 备注），系统将解析并展示。也可先体验内置示例商品库。</p>
+      <div class="row">
+        <div class="drop" id="drop" style="flex:1;min-width:260px">
+          <p style="margin:0 0 6px">📤 点击或拖拽 <b>Excel 文件</b> 到此处上传</p>
+          <p style="margin:0;font-size:12px;color:var(--sub)">支持 .xlsx / .xls · 自动识别表头字段</p>
+          <input type="file" id="fileInput" accept=".xlsx,.xls" hidden />
+        </div>
+        <div class="field">
+          <label>快速操作</label>
+          <div class="row">
+            <button class="btn" id="btnTemplate">⬇ 下载模板</button>
+            <button class="btn" id="btnSample">✨ 载入示例库</button>
+          </div>
+        </div>
+      </div>
+      <div class="note">Excel 字段（自动识别，表头在第 1–20 行均可）：<b>商品图片/产品图片</b>（可选，留空自动生成占位图）· <b>SKU/货号</b>（缺省按序号或名称生成）· <b>商品名称/品名</b> · <b>成本价/一件代发价格/普票含税价/直播价</b> · <b>分类</b> · <b>备注/卖点</b>。图片列支持填写图片 URL，上传后自动抓取；WPS 内嵌图（=DISPIMG）暂不支持。</div>
+      <div style="margin-top:18px;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:13px;color:var(--sub)">当前商品库：<b id="libCount" style="color:var(--ink)">0</b> 个商品</div>
+        <button class="btn primary" id="toSelect" disabled>下一步：选择商品 →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ STEP 1: 选择商品 ============ -->
+  <section class="section" id="sec1">
+    <div class="card">
+      <h2>② 选择商品</h2>
+      <p class="hint">从商品库勾选需要进入货盘的商品，支持搜索与分类筛选。</p>
+      <div class="row" style="margin-bottom:14px">
+        <div class="field" style="flex:1;min-width:200px">
+          <label>搜索商品名称 / SKU</label>
+          <input type="text" id="search" placeholder="如：针织开衫 / A001" />
+        </div>
+        <div class="field">
+          <label>分类筛选</label>
+          <select id="catFilter"><option value="">全部分类</option></select>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <div class="row">
+            <button class="btn" id="selAll">全选</button>
+            <button class="btn" id="selNone">清空</button>
+          </div>
+        </div>
+      </div>
+      <div class="grid" id="selGrid"></div>
+      <div style="margin-top:18px;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:13px;color:var(--sub)">已选：<b id="selCount" style="color:var(--ink)">0</b> 个</div>
+        <div class="row">
+          <button class="btn" data-back="0">← 返回</button>
+          <button class="btn primary" id="toPrice" disabled>下一步：商品定价 →</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ STEP 2: 定价 ============ -->
+  <section class="section" id="sec2">
+    <div class="card">
+      <h2>③ 商品定价</h2>
+      <p class="hint">选择定价方式：直接填写售价，或输入目标利润率由系统反推建议售价。调整即时联动利润预览。</p>
+      <div class="row" style="margin-bottom:14px">
+        <div class="seg" id="modeSeg">
+          <button data-mode="price" class="on">按销售价格</button>
+          <button data-mode="margin">按目标利润率</button>
+        </div>
+        <div class="field">
+          <label id="batchLabel">批量设置售价（元）</label>
+          <div class="row">
+            <input type="number" id="batchVal" placeholder="如 199" style="width:140px" />
+            <button class="btn" id="batchApply">应用到已选</button>
+          </div>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table id="priceTable">
+          <thead><tr>
+            <th style="width:56px">图片</th><th>SKU</th><th>商品名称</th><th>成本价</th>
+            <th id="inputHead">销售价(元)</th><th>利润</th><th>利润率</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div style="margin-top:18px;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:13px;color:var(--sub)">已定价：<b id="pricedCount" style="color:var(--ink)">0</b> / <span id="pricedTotal">0</span></div>
+        <div class="row">
+          <button class="btn" data-back="1">← 返回</button>
+          <button class="btn primary" id="toPreview">下一步：利润预览 →</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ STEP 3: 预览 ============ -->
+  <section class="section" id="sec3">
+    <div class="card">
+      <h2>④ 利润率实时预览</h2>
+      <p class="hint">利润率 = 利润 ÷ 销售价。颜色提示：<span class="pill g">≥50% 优</span> <span class="pill y">30%-50% 中</span> <span class="pill r">&lt;30% 偏低</span></p>
+      <div style="overflow-x:auto">
+        <table id="prevTable">
+          <thead><tr><th style="width:56px">图片</th><th>SKU</th><th>商品名称</th><th>成本价</th><th>销售价</th><th>利润</th><th>利润率</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="summary" id="summary"></div>
+      <div style="margin-top:18px;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:13px;color:var(--sub)">平均利润率：<b id="avgMargin" style="color:var(--ink)">—</b></div>
+        <div class="row">
+          <button class="btn" data-back="2">← 返回</button>
+          <button class="btn primary" id="toGen">下一步：生成货盘 →</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ STEP 4: 生成 ============ -->
+  <section class="section" id="sec4">
+    <div class="card">
+      <h2>⑤ AI 生成货盘 Excel</h2>
+      <p class="hint">AI 将基于已选商品自动生成货盘标题、优化商品描述与卖点，并导出标准货盘 Excel。</p>
+      <div class="row" style="margin-bottom:14px">
+        <div class="field" style="flex:1;min-width:220px">
+          <label>货盘文件名称</label>
+          <input type="text" id="fileName" value="春季女装货盘" />
+        </div>
+        <div class="field">
+          <label>货盘标题（AI 生成）</label>
+          <input type="text" id="docTitle" placeholder="点击生成后自动填充" readonly />
+        </div>
+      </div>
+      <div class="note" id="aiNote">本 DEMO 的「AI 生成」为<b>模板化模拟</b>（基于分类与卖点库的规则生成），接口已预留，可无缝替换为真实 LLM（如扣子 / 通义 / GPT）生成更自然的文案。</div>
+      <div style="margin-top:18px;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:13px;color:var(--sub)">待生成商品：<b id="genCount" style="color:var(--ink)">0</b> 个</div>
+        <div class="row">
+          <button class="btn" data-back="3">← 返回</button>
+          <button class="btn primary" id="btnGenerate">🤖 AI 生成并导出 Excel</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 文件管理 ============ -->
+  <section class="section" id="secFiles">
+    <div class="card">
+      <h2>📁 文件管理</h2>
+      <p class="hint">查看、下载与删除历史生成的货盘文件。</p>
+      <div class="gen-list" id="genList"></div>
+      <div class="empty" id="genEmpty">暂无生成记录，去「生成货盘」步骤创建第一份货盘吧。</div>
+      <div style="margin-top:16px"><button class="btn" data-back="0">← 返回商品库</button></div>
+    </div>
+  </section>
+
+  <div class="foot">
+    货盘助手 · PRD V1.1 DEMO &nbsp;|&nbsp; 单文件可运行原型（无需后端）<br/>
+    解析/模板：SheetJS &nbsp;·&nbsp; 货盘导出（含图片）：ExcelJS
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+/* =========================================================
+   货盘助手 DEMO — 纯前端单文件原型
+   架构：状态驱动渲染（state -> render），无框架依赖
+   ========================================================= */
+const state = {
+  products: [],            // 商品库 {sku,name,cost,category,note,img}
+  selected: new Set(),     // 已选 SKU
+  mode: 'price',           // 'price' | 'margin'
+  pricing: {},             // sku -> 输入值(售价或目标利润率%)
+  generated: [],           // 历史 {id,name,time,rows:[],url}
+  step: 0
+};
+
+const $ = (s)=>document.querySelector(s);
+const $$ = (s)=>document.querySelectorAll(s);
+
+/* ---------- 工具 ---------- */
+function toast(msg){
+  const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),2200);
+}
+function fmt(n){ return (Math.round(n*100)/100).toLocaleString('zh-CN'); }
+function marginClass(m){ return m>=50?'g':(m>=30?'y':'r'); }
+function marginWord(m){ return m>=50?'优':(m>=30?'中':'偏低'); }
+
+/* ---------- 计算核心 ---------- */
+function compute(sku){
+  const p = state.products.find(x=>x.sku===sku);
+  if(!p) return null;
+  const cost = Number(p.cost)||0;
+  const raw = state.pricing[sku];
+  let price, profit, marginPct;
+  if(state.mode==='price'){
+    price = Number(raw)||0;
+    profit = price - cost;
+    marginPct = price>0 ? (profit/price*100) : 0;
+  }else{
+    const target = Number(raw)||0;          // 目标利润率 %
+    if(target>=100){ price = cost; profit = 0; marginPct = 0; }
+    else { price = cost/(1 - target/100); profit = price - cost; marginPct = target; }
+  }
+  return {cost, price, profit, marginPct};
+}
+
+/* ---------- 示例商品库（canvas 生成 PNG 图，自包含无外链）---------- */
+const CAT_COLORS = {
+  '上衣':['#a78bfa','#7c3aed'], '裤装':['#60a5fa','#2563eb'],
+  '裙装':['#f472b6','#db2777'], '外套':['#34d399','#059669'],
+  '其他':['#fbbf24','#d97706']
+};
+function makeImg(name, category){
+  const c=document.createElement('canvas'); c.width=300; c.height=300;
+  const ctx=c.getContext('2d');
+  const col=CAT_COLORS[category]||CAT_COLORS['其他'];
+  const g=ctx.createLinearGradient(0,0,300,300);
+  g.addColorStop(0,col[0]); g.addColorStop(1,col[1]);
+  ctx.fillStyle=g; ctx.fillRect(0,0,300,300);
+  // 装饰圆
+  ctx.fillStyle='rgba(255,255,255,.12)';
+  ctx.beginPath(); ctx.arc(235,70,70,0,7); ctx.fill();
+  ctx.beginPath(); ctx.arc(60,250,50,0,7); ctx.fill();
+  // 分类标签
+  ctx.fillStyle='rgba(255,255,255,.9)';
+  ctx.font='600 18px "PingFang SC",sans-serif'; ctx.textAlign='left';
+  ctx.fillText(category||'商品', 24, 44);
+  // 商品名
+  ctx.fillStyle='#fff'; ctx.textAlign='center';
+  ctx.font='800 26px "PingFang SC",sans-serif';
+  const words=name.split('');
+  const per=words.length>6?words.length:6;
+  let line=''; let y=150; const lines=[];
+  words.forEach(ch=>{ if((line+ch).length>5){lines.push(line);line=ch;} else line+=ch; });
+  if(line) lines.push(line);
+  lines.slice(0,3).forEach((l,i)=>ctx.fillText(l,150,150+i*34));
+  return c.toDataURL('image/png');
+}
+function loadSample(){
+  const base=[
+    ['针织开衫','A001',80,'上衣'],['雪纺衬衫','A003',55,'上衣'],['纯棉T恤','A007',35,'上衣'],
+    ['亚麻裤','A002',65,'裤装'],['高腰阔腿裤','A008',75,'裤装'],
+    ['百褶半裙','A004',70,'裙装'],['牛仔连衣裙','A006',95,'裙装'],
+    ['风衣外套','A005',120,'外套']
+  ];
+  state.products = base.map(([name,sku,cost,category])=>({
+    sku, name, cost, category, note:'示例数据', img: makeImg(name,category)
+  }));
+  state.selected = new Set(state.products.map(p=>p.sku));
+  // 默认给个售价（成本*2.5 左右）
+  state.products.forEach(p=>{ state.pricing[p.sku] = Math.round((p.cost*2.5)); });
+  state.mode='price';
+  renderLibrary(); renderAll();
+  toast('已载入示例商品库（'+state.products.length+' 个）');
+}
+
+/* ---------- 商品库渲染 ---------- */
+function renderLibrary(){
+  $('#libCount').textContent = state.products.length;
+  $('#toSelect').disabled = state.products.length===0;
+}
+function buildCatOptions(){
+  const sel=$('#catFilter'); const cur=sel.value;
+  const cats=[...new Set(state.products.map(p=>p.category))];
+  sel.innerHTML='<option value="">全部分类</option>'+cats.map(c=>`<option>${c}</option>`).join('');
+  sel.value=cur;
+}
+
+/* ---------- STEP1 选择渲染 ---------- */
+function renderSelect(){
+  buildCatOptions();
+  const q=$('#search').value.trim().toLowerCase();
+  const cat=$('#catFilter').value;
+  const list=state.products.filter(p=>{
+    if(cat && p.category!==cat) return false;
+    if(q && !(p.name.toLowerCase().includes(q)||p.sku.toLowerCase().includes(q))) return false;
+    return true;
+  });
+  const grid=$('#selGrid');
+  if(!list.length){ grid.innerHTML='<div class="empty" style="grid-column:1/-1">没有匹配的商品</div>'; }
+  else{
+    grid.innerHTML=list.map(p=>{
+      const on=state.selected.has(p.sku);
+      return `<div class="pcard ${on?'sel':''}" data-sku="${p.sku}">
+        <div class="chk">${on?'✓':''}</div>
+        <div class="img"><img src="${p.img}" alt=""></div>
+        <div class="meta">
+          <p class="name">${p.name}</p>
+          <div class="sub"><span class="tag">${p.category}</span><span>成本 ¥${p.cost}</span></div>
+          <div class="sub" style="margin-top:4px;color:#9aa0ad">SKU: ${p.sku}</div>
+        </div></div>`;
+    }).join('');
+    grid.querySelectorAll('.pcard').forEach(el=>{
+      el.onclick=()=>{ const s=el.dataset.sku;
+        state.selected.has(s)?state.selected.delete(s):state.selected.add(s);
+        renderSelect(); };
+    });
+  }
+  $('#selCount').textContent=state.selected.size;
+  $('#toPrice').disabled=state.selected.size===0;
+}
+
+/* ---------- STEP2 定价渲染 ---------- */
+function renderPrice(){
+  $('#pricedTotal').textContent=state.selected.size;
+  $('#batchLabel').textContent = state.mode==='price'?'批量设置售价（元）':'批量设置目标利润率（%）';
+  $('#inputHead').textContent = state.mode==='price'?'销售价(元)':'目标利润率(%)';
+  const tb=$('#priceTable tbody');
+  const list=state.products.filter(p=>state.selected.has(p.sku));
+  tb.innerHTML=list.map(p=>{
+    const c=compute(p.sku);
+    const val=state.pricing[p.sku]??'';
+    const placeholder=state.mode==='price'?'输入售价':`如 ${Math.round(p.cost*2.5)}`;
+    return `<tr data-sku="${p.sku}">
+      <td><img src="${p.img}" style="width:40px;height:40px;border-radius:8px;object-fit:cover"></td>
+      <td>${p.sku}</td><td>${p.name}</td><td>¥${p.cost}</td>
+      <td><input type="number" min="0" step="0.01" value="${val}" data-sku="${p.sku}" placeholder="${placeholder}" style="width:120px"></td>
+      <td>${c&&c.price>0?'¥'+fmt(c.profit):'—'}</td>
+      <td>${c&&c.price>0?`<span class="pill ${marginClass(c.marginPct)}">${fmt(c.marginPct)}% · ${marginWord(c.marginPct)}</span>`:'—'}</td>
+    </tr>`;
+  }).join('');
+  tb.querySelectorAll('input').forEach(inp=>{
+    inp.oninput=()=>{ state.pricing[inp.dataset.sku]=inp.value; renderPriceLive(); };
+  });
+  renderPriceLive();
+}
+function renderPriceLive(){
+  // 仅刷新利润/利润率列，避免输入框失焦
+  const tb=$('#priceTable tbody');
+  tb.querySelectorAll('tr').forEach(tr=>{
+    const sku=tr.dataset.sku; const c=compute(sku);
+    const tds=tr.children;
+    tds[5].textContent = c&&c.price>0?'¥'+fmt(c.profit):'—';
+    tds[6].innerHTML = c&&c.price>0?`<span class="pill ${marginClass(c.marginPct)}">${fmt(c.marginPct)}% · ${marginWord(c.marginPct)}</span>`:'—';
+  });
+  const priced=[...state.selected].filter(s=>Number(state.pricing[s])>0).length;
+  $('#pricedCount').textContent=priced;
+  $('#toPreview').disabled = priced!==state.selected.size || state.selected.size===0;
+}
+
+/* ---------- STEP3 预览渲染 ---------- */
+function renderPreview(){
+  const tb=$('#prevTable tbody');
+  const list=state.products.filter(p=>state.selected.has(p.sku));
+  tb.innerHTML=list.map(p=>{
+    const c=compute(p.sku);
+    return `<tr>
+      <td><img src="${p.img}" style="width:40px;height:40px;border-radius:8px;object-fit:cover"></td>
+      <td>${p.sku}</td><td>${p.name}</td><td>¥${c.cost}</td>
+      <td>¥${fmt(c.price)}</td><td>¥${fmt(c.profit)}</td>
+      <td><span class="pill ${marginClass(c.marginPct)}">${fmt(c.marginPct)}%</span></td>
+    </tr>`;
+  }).join('');
+  const tc=list.length, tCost=list.reduce((s,p)=>s+compute(p.sku).cost,0);
+  const tPrice=list.reduce((s,p)=>s+compute(p.sku).price,0);
+  const tProfit=tPrice-tCost;
+  const avg=tPrice>0?tProfit/tPrice*100:0;
+  $('#summary').innerHTML=`
+    <div class="stat"><div class="k">商品数量</div><div class="v">${tc}</div></div>
+    <div class="stat"><div class="k">总成本</div><div class="v">¥${fmt(tCost)}</div></div>
+    <div class="stat"><div class="k">总售价</div><div class="v">¥${fmt(tPrice)}</div></div>
+    <div class="stat"><div class="k">总利润</div><div class="v" style="color:var(--green)">¥${fmt(tProfit)}</div></div>
+    <div class="stat"><div class="k">平均利润率</div><div class="v">${fmt(avg)}%</div></div>`;
+  $('#avgMargin').textContent=fmt(avg)+'%';
+  $('#genCount').textContent=state.selected.size;
+}
+
+/* ---------- AI 文案生成（模拟）---------- */
+const POOL={
+  '上衣':['亲肤透气面料','修身显瘦版型','基础百搭易衬','通勤休闲两宜'],
+  '裤装':['高腰显腿长','垂感顺滑不塌','舒适无束缚','修饰腿型利落'],
+  '裙装':['优雅气质拉满','A字显瘦遮肉','仙女氛围感','垂坠有型'],
+  '外套':['挺括有型','防风保暖','气质叠穿利器','质感高级'],
+  '其他':['性价比之选','当季热推','细节考究','易搭配']
+};
+function aiGenerate(p, idx){
+  const pool=POOL[p.category]||POOL['其他'];
+  const pick=[pool[idx%pool.length], pool[(idx+1)%pool.length], pool[(idx+2)%pool.length]];
+  const desc=`【${p.name}】${p.category}精选单品，${pick[0]}，${pick[1]}，适配多场景穿搭，是当季高性价比之选。`;
+  const sell=pick.join(' / ');
+  return {desc, sell};
+}
+
+/* ---------- Excel 导出（含图片）---------- */
+async function exportExcel(){
+  if(typeof ExcelJS==='undefined'){ toast('ExcelJS 未加载（需联网 CDN）'); return; }
+  const list=state.products.filter(p=>state.selected.has(p.sku));
+  const wb=new ExcelJS.Workbook();
+  wb.creator='货盘助手';
+  const ws=wb.addWorksheet('货盘');
+  const title=$('#docTitle').value || ($('#fileName').value+' · 智能货盘');
+  ws.columns=[
+    {header:'图片',width:12},{header:'SKU',width:12},{header:'商品名称',width:20},
+    {header:'分类',width:10},{header:'成本价',width:10},{header:'销售价',width:10},
+    {header:'利润率',width:10},{header:'商品描述',width:46},{header:'商品卖点',width:30}
+  ];
+  ws.getRow(1).font={bold:true};
+  ws.getRow(1).fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFF1ECFF'}};
+  let r=2;
+  list.forEach((p,i)=>{
+    const c=compute(p.sku); const ai=aiGenerate(p,i);
+    const marginPct = state.mode==='margin' ? (Number(state.pricing[p.sku])||0) : (c.price>0?c.marginPct:0);
+    ws.addRow([ '', p.sku, p.name, p.category, Math.round(c.cost), Math.round(c.price),
+      fmt(marginPct)+'%', ai.desc, ai.sell ]);
+    const row=ws.getRow(r); row.height=58;
+    // 嵌入图片
+    try{
+      const b64=p.img.split(',')[1];
+      const id=wb.addImage({base64:b64,extension:'png'});
+      ws.addImage(id,{tl:{col:0,row:r-1},ext:{width:54,height:54}});
+    }catch(e){ /* 图片嵌入失败不阻断 */ }
+    r++;
+  });
+  const buf=await wb.xlsx.writeBuffer();
+  const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  const url=URL.createObjectURL(blob);
+  return {blob,url};
+}
+
+/* ---------- 模板导出 ---------- */
+function exportTemplate(){
+  if(typeof ExcelJS==='undefined'){ toast('ExcelJS 未加载（需联网 CDN）'); return; }
+  const wb=new ExcelJS.Workbook();
+  const ws=wb.addWorksheet('商品库模板');
+  ws.columns=[{header:'商品图片',width:24},{header:'SKU',width:14},{header:'商品名称',width:20},
+    {header:'成本价',width:12},{header:'分类',width:12},{header:'备注',width:20}];
+  ws.getRow(1).font={bold:true};
+  ws.getRow(1).fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFF1ECFF'}};
+  ws.addRow(['（可填图片URL，留空自动生成占位图）','A001','示例针织开衫',80,'上衣','春季新款']);
+  ws.xlsx.writeBuffer().then(buf=>{
+    const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    downloadBlob(blob,'商品库模板.xlsx');
+    toast('模板已下载');
+  });
+}
+function downloadBlob(blob,name){
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+/* ---------- Excel 上传解析 ---------- */
+function handleFile(file){
+  if(typeof XLSX==='undefined'){ toast('SheetJS 未加载（需联网 CDN）'); return; }
+  const reader=new FileReader();
+  reader.onload=(e)=>{
+    try{
+      const wb=XLSX.read(e.target.result,{type:'array'});
+      const sh=wb.Sheets[wb.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(sh,{defval:''});
+      const prods=rows.map(r=>{
+        const name = r['商品名称']||r['名称']||r['品名']||'';
+        let sku = r['SKU']||r['sku']||r['货号']||'';
+        // 成本列优先级：一件代发价格 → 普票含税价 → 直播价（可按需调整）
+        const cost = Number(r['成本价']||r['成本']||r['一件代发价格']||r['普票含税价']||r['直播价']||0);
+        const category = r['分类']||r['类目']||'其他';
+        const note = r['备注']||r['卖点']||r['描述']||'';
+        let img = r['商品图片']||r['图片']||r['产品图片']||r['产品包装图']||'';
+        if(img && !/^data:|^https?:\/\//.test(img)) img=''; // 本地震径 / WPS 公式不处理
+        if(!sku) sku = (r['序号']||r['编号']||'') || ('SKU-'+name); // 缺 SKU 时回退
+        if(!img) img=makeImg(name||'商品',category);
+        return {name,sku,cost,category,note,img};
+      }).filter(p=>p.name && p.sku);
+      if(!prods.length){ toast('未解析到有效商品，请检查表头'); return; }
+      state.products=prods;
+      state.selected=new Set(prods.map(p=>p.sku));
+      state.pricing={}; prods.forEach(p=>state.pricing[p.sku]=Math.round(p.cost*2.5));
+      renderLibrary(); renderAll();
+      toast('已解析 '+prods.length+' 个商品');
+    }catch(err){ toast('解析失败：'+err.message); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+/* ---------- 文件管理渲染 ---------- */
+function renderFiles(){
+  const box=$('#genList'); const empty=$('#genEmpty');
+  if(!state.generated.length){ box.innerHTML=''; empty.style.display='block'; return; }
+  empty.style.display='none';
+  box.innerHTML=state.generated.slice().reverse().map(g=>`
+    <div class="gen-item" data-id="${g.id}">
+      <div class="l"><div class="t">${g.name}</div><div class="m">${g.time} · ${g.rows} 个商品</div></div>
+      <div class="r">
+        <button class="btn" data-act="dl" data-id="${g.id}">⬇ 下载</button>
+        <button class="btn" data-act="del" data-id="${g.id}">🗑 删除</button>
+      </div></div>`).join('');
+  box.querySelectorAll('button').forEach(b=>{
+    b.onclick=()=>{
+      const g=state.generated.find(x=>x.id===b.dataset.id);
+      if(b.dataset.act==='dl'){ const a=document.createElement('a');a.href=g.url;a.download=g.name;a.click(); }
+      else{ state.generated=state.generated.filter(x=>x.id!==b.dataset.id); renderFiles(); toast('已删除'); }
+    };
+  });
+}
+
+/* ---------- 步骤切换 ---------- */
+function goStep(n){
+  state.step=n;
+  $$('.section').forEach(s=>s.classList.remove('show'));
+  if(n==='files'){ $('#secFiles').classList.add('show'); }
+  else{ $('#sec'+n).classList.add('show');
+    if(n===1) renderSelect(); if(n===2) renderPrice(); if(n===3) renderPreview();
+  }
+  $$('.step').forEach(s=>{
+    const sn=Number(s.dataset.step);
+    s.classList.toggle('active', sn===n);
+    s.classList.toggle('done', typeof n==='number' && sn<n);
+  });
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function renderAll(){ renderLibrary(); renderSelect(); renderPrice(); renderPreview(); }
+
+/* ---------- 事件绑定 ---------- */
+$('#drop').onclick=()=>$('#fileInput').click();
+$('#fileInput').onchange=(e)=>{ if(e.target.files[0]) handleFile(e.target.files[0]); };
+['dragover','dragenter'].forEach(ev=>$('#drop').addEventListener(ev,e=>{e.preventDefault();$('#drop').style.borderColor='var(--brand)';}));
+['dragleave','drop'].forEach(ev=>$('#drop').addEventListener(ev,e=>{e.preventDefault();$('#drop').style.borderColor='';}));
+$('#drop').addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) handleFile(f); });
+$('#btnSample').onclick=loadSample;
+$('#btnTemplate').onclick=exportTemplate;
+$('#toSelect').onclick=()=>goStep(1);
+$('#search').oninput=renderSelect;
+$('#catFilter').onchange=renderSelect;
+$('#selAll').onclick=()=>{ state.products.forEach(p=>state.selected.add(p.sku)); renderSelect(); };
+$('#selNone').onclick=()=>{ state.selected.clear(); renderSelect(); };
+$('#toPrice').onclick=()=>goStep(2);
+$('#modeSeg').querySelectorAll('button').forEach(b=>{
+  b.onclick=()=>{ state.mode=b.dataset.mode;
+    $('#modeSeg').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+    renderPrice(); };
+});
+$('#batchApply').onclick=()=>{
+  const v=Number($('#batchVal').value); if(!v){toast('请输入批量数值');return;}
+  [...state.selected].forEach(s=>state.pricing[s]=v); renderPrice();
+  toast('已应用到 '+state.selected.size+' 个商品');
+};
+$('#toPreview').onclick=()=>goStep(3);
+$('#toGen').onclick=()=>goStep(4);
+$('#btnGenerate').onclick=async()=>{
+  const btn=$('#btnGenerate'); btn.disabled=true;
+  btn.innerHTML='<span class="ai-anim"></span>AI 生成中…';
+  // 模拟 AI 处理延迟
+  await new Promise(r=>setTimeout(r,900));
+  const fname=($('#fileName').value||'春季女装货盘')+'.xlsx';
+  const list=state.products.filter(p=>state.selected.has(p.sku));
+  $('#docTitle').value=`${list[0]?list[0].category:''}精选货盘 · 共${list.length}款 · ${new Date().toLocaleDateString('zh-CN')}`;
+  try{
+    const {blob,url}=await exportExcel();
+    const id='g'+Date.now();
+    state.generated.push({id,name:fname,time:new Date().toLocaleString('zh-CN'),rows:list.length,url});
+    renderFiles();
+    const a=document.createElement('a'); a.href=url; a.download=fname; a.click();
+    toast('货盘已生成并下载：'+fname);
+  }catch(err){ toast('导出失败：'+err.message); }
+  btn.disabled=false; btn.innerHTML='🤖 AI 生成并导出 Excel';
+};
+$$('[data-back]').forEach(b=>b.onclick=()=>goStep(Number(b.dataset.back)));
+$$('.step').forEach(s=>s.onclick=()=>{ const n=Number(s.dataset.step);
+  // 仅允许回退或顺序前进（不跳步）
+  if(n<=state.step || n===state.step+1) goStep(n);
+});
+$('#navFiles').onclick=()=>{ renderFiles(); goStep('files'); };
+$('#navStart').onclick=()=>goStep(state.products.length?1:0);
+
+/* ---------- 初始化 ---------- */
+renderLibrary();
+</script>
+</body>
+</html>

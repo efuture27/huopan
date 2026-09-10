@@ -1,0 +1,1151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>货盘助手 · Vue3 + Element Plus（联调版）</title>
+<!-- Vue3 + Element Plus + Icons（本地内置，离线可用） -->
+<script src="./vendor/vue.global.prod.js"></script>
+<script src="./vendor/element-plus.full.min.js"></script>
+<link rel="stylesheet" href="./vendor/element-plus.css" />
+<script src="./vendor/element-plus-icons.iife.min.js"></script>
+<script src="./vendor/element-plus.zh-cn.min.js"></script>
+<style>
+  body{margin:0;font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;background:#f5f6fb;color:#1f2330}
+  #app{max-width:1200px;margin:0 auto;padding:20px}
+  .hero{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap}
+  .hero h1{font-size:20px;margin:0}
+  .hero p{margin:4px 0 0;color:#909399;font-size:13px}
+  .logo{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#7c3aed,#ec4899);
+    color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:18px}
+  .card{background:#fff;border-radius:16px;box-shadow:0 8px 30px rgba(31,35,48,.08);padding:20px;margin-top:14px}
+  .align-note{font-size:12px;color:#909399;background:#faf9ff;border:1px dashed #e3def7;border-radius:10px;padding:10px 12px;margin-top:12px;line-height:1.7}
+  .align-note code{background:#efeafc;padding:1px 5px;border-radius:5px;color:#6d28d9}
+  .img-wrap{width:46px;height:46px;border-radius:8px;overflow:hidden;position:relative;display:inline-block}
+  .img-wrap .el-image,.img-wrap img{width:100%;height:100%;object-fit:cover;display:block}
+  /* 货盘可视化卡片墙 */
+  .plan-card{background:#fff;border:1px solid #eee;border-radius:12px;overflow:hidden;transition:box-shadow .15s,transform .15s}
+  .plan-card:hover{box-shadow:0 6px 20px rgba(31,35,48,.12);transform:translateY(-2px)}
+  .plan-card-img{height:170px;background:#faf9ff;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .plan-card-img img{width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in}
+  .plan-card-name{font-size:13px;color:#333;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:38px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* =========================================================================
+ * 货盘助手 DEMO — Vue3 + Element Plus（后端联调版）
+ * 前端调用真实 FastAPI 后端（§6 五个 API）：/api/auth/login · /api/product/upload
+ * · /api/product/list · /api/product/sample · /api/profit/calculate · /api/profit/price
+ * · /api/plan/generate
+ * =========================================================================
+ * // ---- TypeScript 类型定义（对应设计文档 §5 表结构）----
+ * interface Product { id:number; sku:string; name:string; image_url:string;
+ *   cost_price:number; category:string; remark:string; create_time:string }
+ * interface User { id:number; username:string; password:string; role:string; status:number }
+ * interface ProductPlan { id:number; name:string; creator:string; create_time:string }
+ * interface ProductPlanItem { id:number; plan_id:number; product_id:number;
+ *   pricing_mode:'price'|'margin'; sale_price:number; profit:number; profit_rate:number }
+ * ========================================================================= */
+
+const { createApp, ref, reactive, computed } = Vue;
+const Msg = ElementPlus.ElMessage;
+const ElMessageBox = ElementPlus.ElMessageBox;
+const Icons = ElementPlusIconsVue;
+// 显式取出用到的图标（避免模板中裸引用未定义变量导致崩溃）
+const { Folder, Download, MagicStick, UploadFilled, Search, Delete, SwitchButton, Van, Plus, View, Files, RefreshRight } = Icons;
+
+// API 基址：通过 nginx 同源代理时用相对路径；本地以 file:// 直接打开则回退到 localhost:8000
+const API_BASE = location.protocol === 'file:' ? 'http://localhost:8000/api' : '/api';
+
+// ---- 全局 401 拦截：token 过期/无效时任何接口返回 401 → 派发事件让界面自动登出（登录/恢复角色接口除外）----
+const _hpFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+  const r = await _hpFetch(...args);
+  try {
+    const url = String(args[0] || '');
+    if (r.status === 401 && !url.includes('/auth/login') && !url.includes('/auth/me')) {
+      window.dispatchEvent(new CustomEvent('hp-unauthorized'));
+    }
+  } catch(e){}
+  return r;
+};
+
+// ---- 前端 service 层：真实调用 FastAPI（§6）----
+const api = {
+  token: localStorage.getItem('hp_token') || '',
+
+  async login(username, password){
+    const fd = new URLSearchParams();
+    fd.append('username', username);
+    fd.append('password', password);
+    const r = await fetch(API_BASE + '/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: fd
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '登录失败'); }
+    const d = await r.json();
+    this.token = d.access_token;
+    localStorage.setItem('hp_token', d.access_token);
+    localStorage.setItem('hp_role', d.role || 'user');
+    return d;
+  },
+
+  async uploadProduct(file, merchant){
+    const fd = new FormData();
+    fd.append('file', file);
+    if (merchant && merchant.trim()) fd.append('merchant', merchant.trim());
+    const r = await fetch(API_BASE + '/product/upload', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + this.token },
+      body: fd
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '上传失败'); }
+    return r.json();
+  },
+
+  async listProducts(){
+    const r = await fetch(API_BASE + '/product/list', {
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '获取商品失败'); }
+    const d = await r.json();
+    return { rows: d.rows || [], merchants: d.merchants || [] };
+  },
+
+  async seedSample(){
+    const r = await fetch(API_BASE + '/product/sample', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '初始化示例失败'); }
+    return r.json();
+  },
+
+  // ---- 上传文件管理（v7.13）----
+  async listUploads(){
+    const r = await fetch(API_BASE + '/product/uploads', {
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '获取上传记录失败'); }
+    const d = await r.json();
+    return d.rows || [];
+  },
+  async downloadUpload(id){
+    const r = await fetch(API_BASE + '/product/uploads/' + id + '/download', {
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '下载失败'); }
+    return r.blob();
+  },
+  async restoreUpload(id){
+    const r = await fetch(API_BASE + '/product/uploads/' + id + '/restore', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '恢复失败'); }
+    return r.json();
+  },
+  async deleteUpload(id){
+    const r = await fetch(API_BASE + '/product/uploads/' + id, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '删除失败'); }
+    return r.json();
+  },
+
+  // ---- 商家偏远运费（商家级多行说明，仅展示不参与佣金）----
+  async listMerchantFees(){
+    const r = await fetch(API_BASE + '/merchant-fee/list', {
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '获取运费配置失败'); }
+    const d = await r.json();
+    return d.rows || [];
+  },
+  async saveMerchantFee(merchant, fee_note){
+    const r = await fetch(API_BASE + '/merchant-fee/save', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ merchant, fee_note })
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '保存失败'); }
+    return r.json();
+  },
+  async batchSaveMerchantFees(items){
+    const r = await fetch(API_BASE + '/merchant-fee/batch', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items })
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '批量保存失败'); }
+    return r.json();
+  },
+  async uploadMerchantFees(file){
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch(API_BASE + '/merchant-fee/upload', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + this.token },
+      body: fd
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '导入失败'); }
+    return r.json();
+  },
+  async deleteMerchantFee(merchant){
+    const r = await fetch(API_BASE + '/merchant-fee/' + encodeURIComponent(merchant), {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '删除失败'); }
+    return r.json();
+  },
+
+  // 利润计算：净利润 = 售价 - 成本 - 平台服务费 - 税费（与后端 /api/profit/calculate 一致）
+  calculateProfit(cost, sale_price, feeRate, taxRate){
+    const fee = +(sale_price * feeRate).toFixed(2);
+    const tax = +(sale_price * taxRate).toFixed(2);
+    const profit = +(sale_price - cost - fee - tax).toFixed(2);
+    const profit_rate = sale_price > 0 ? +(profit / sale_price * 100).toFixed(2) : 0;
+    return { profit, profit_rate, fee, tax };
+  },
+  calculatePrice(cost, target_rate, feeRate, taxRate){
+    const denom = 1 - target_rate - feeRate - taxRate;
+    const sale_price = denom <= 0 ? cost : +(cost / denom).toFixed(2);
+    return { sale_price };
+  },
+
+  async generatePlan(payload){
+    const r = await fetch(API_BASE + '/plan/generate', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '生成失败'); }
+    return r.blob();
+  },
+
+  // ---- 货盘记录（持久化）：列表 / 详情 / 重新下载 / 删除 ----
+  async listPlans(){
+    const r = await fetch(API_BASE + '/plan/list', {
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '获取货盘列表失败'); }
+    return r.json();
+  },
+  async getPlan(id){
+    const r = await fetch(API_BASE + '/plan/' + id, {
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '获取货盘详情失败'); }
+    return r.json();
+  },
+  async downloadPlan(id){
+    const r = await fetch(API_BASE + '/plan/' + id + '/download', {
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '重新生成失败'); }
+    return r.blob();
+  },
+  async deletePlan(id){
+    const r = await fetch(API_BASE + '/plan/' + id, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '删除失败'); }
+    return r.json();
+  },
+
+  async downloadTemplate(){
+    const r = await fetch(API_BASE + '/product/template', {
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '下载模板失败'); }
+    return r.blob();
+  },
+
+  async getLlmConfig(){
+    const r = await fetch(API_BASE + '/config/llm', { headers: { 'Authorization': 'Bearer ' + this.token } });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '读取配置失败'); }
+    return r.json();
+  },
+
+  async setLlmConfig(cfg){
+    const r = await fetch(API_BASE + '/config/llm', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg)
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '保存配置失败'); }
+    return r.json();
+  }
+};
+
+// ---- 工具 ----
+const fmt = (n) => (Math.round(n * 100) / 100).toLocaleString('zh-CN');
+const marginWord = (m) => (m >= 50 ? '优' : m >= 30 ? '中' : '偏低');
+const marginType = (m) => (m >= 50 ? 'success' : m >= 30 ? 'warning' : 'danger');
+
+// 示例商品图：canvas 生成 PNG（仅用于前端展示；上传/生成的真实图片走后端 image_url）
+const CAT_COLORS = { '上衣':['#a78bfa','#7c3aed'], '裤装':['#60a5fa','#2563eb'],
+  '裙装':['#f472b6','#db2777'], '外套':['#34d399','#059669'], '其他':['#fbbf24','#d97706'] };
+function makeImg(name, category){
+  const c = document.createElement('canvas'); c.width = 300; c.height = 300;
+  const ctx = c.getContext('2d');
+  const col = CAT_COLORS[category] || CAT_COLORS['其他'];
+  const g = ctx.createLinearGradient(0,0,300,300); g.addColorStop(0,col[0]); g.addColorStop(1,col[1]);
+  ctx.fillStyle = g; ctx.fillRect(0,0,300,300);
+  ctx.fillStyle = 'rgba(255,255,255,.12)';
+  ctx.beginPath(); ctx.arc(235,70,70,0,7); ctx.fill();
+  ctx.beginPath(); ctx.arc(60,250,50,0,7); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.font = '600 18px "PingFang SC",sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText(category || '商品', 24, 44);
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = '800 26px "PingFang SC",sans-serif';
+  const words = name.split(''); const lines = []; let line = '';
+  words.forEach(ch => { if ((line+ch).length > 5) { lines.push(line); line = ch; } else line += ch; });
+  if (line) lines.push(line);
+  lines.slice(0,3).forEach((l,i) => ctx.fillText(l, 150, 150 + i*34));
+  return c.toDataURL('image/png');
+}
+function downloadBlob(blob, name){
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function downloadBlobUrl(url, name){
+  const a = document.createElement('a'); a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+createApp({
+  template: `
+  <div>
+  <div class="hero">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="logo">AI</div>
+      <div>
+        <h1>货盘助手</h1>
+      </div>
+    </div>
+    <div>
+      <el-tag v-if="loggedUser" type="success" effect="light">{{ loggedUser }} 已登录</el-tag>
+      <el-button v-if="loggedUser" @click="logout" :icon="SwitchButton">退出</el-button>
+      <el-button @click="uploadsVisible=true; loadUploads()" :icon="Files">上传文件</el-button>
+      <el-button @click="filesVisible=true" :icon="Folder">文件管理</el-button>
+      <el-button type="primary" @click="goStep(hasProducts?1:0)" :icon="MagicStick">开始制作</el-button>
+    </div>
+  </div>
+
+  <el-steps :active="active" finish-status="success" align-center>
+    <el-step title="商品库" description="上传 / 模板" />
+    <el-step title="选择商品" description="搜索 / 筛选" />
+    <el-step title="商品定价" description="售价 / 选货盘类型" />
+    <el-step title="利润预览" description="实时核算" />
+    <el-step title="生成货盘" description="文件名 / 主标题" />
+  </el-steps>
+
+  <!-- STEP 0 商品库 -->
+  <div class="card" v-show="active===0">
+    <h2 style="margin:0 0 14px;font-size:17px">① 商品库管理</h2>
+    <el-alert v-if="!isAdmin" type="info" :closable="false" show-icon style="margin-bottom:14px"
+              title="商品库由管理员统一维护"
+              description="如需新增或更新商品，请联系管理员上传商品库 Excel。您可以直接使用现有商品生成货盘。" />
+    <template v-if="isAdmin">
+      <el-upload drag :auto-upload="false" :show-file-list="false" accept=".xlsx,.xls" :on-change="onUploadChange">
+        <el-icon style="font-size:46px;color:#c0c4cc"><UploadFilled /></el-icon>
+        <div style="margin-top:8px">将 Excel 拖到此处，或 <em style="color:#7c3aed">点击上传</em></div>
+        <div style="font-size:12px;color:#c0c4cc">支持 .xlsx / .xls，自动识别表头字段 · 上传写入本地数据库</div>
+      </el-upload>
+      <div style="display:flex;gap:10px;margin-top:14px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:13px;color:#606266">商家名称：</span>
+        <el-input v-model="merchantInput" placeholder="选填；留空则自动从 Excel 标题/文件名识别" style="width:320px" clearable />
+      </div>
+      <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">
+        <el-button :icon="Download" @click="exportTemplate">下载模板（18 列标准报价单）</el-button>
+        <el-button :icon="MagicStick" @click="loadSample">载入示例库</el-button>
+        <el-tag type="info" style="margin-left:auto">商品库：{{ products.length }} 个</el-tag>
+      </div>
+    </template>
+    <div v-else style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <el-tag type="info">商品库：{{ products.length }} 个</el-tag>
+      <el-tag type="success" v-if="hasProducts">可直接开始制作</el-tag>
+      <el-tag type="warning" v-else>商品库为空，请联系管理员上传</el-tag>
+    </div>
+    <div style="margin-top:16px;text-align:right">
+      <el-button type="primary" :disabled="!hasProducts" @click="goStep(1)">下一步：选择商品 →</el-button>
+    </div>
+  </div>
+
+  <!-- STEP 1 选择商品 -->
+  <div class="card" v-show="active===1">
+    <h2 style="margin:0 0 14px;font-size:17px">② 商品选择</h2>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
+      <el-input v-model="search" placeholder="搜索商品名称 / SKU" :prefix-icon="Search" style="width:260px" clearable />
+      <el-select v-model="catFilter" placeholder="全部分类" clearable style="width:160px">
+        <el-option v-for="c in categories" :key="c" :label="c" :value="c" />
+      </el-select>
+      <el-select v-if="merchants.length" v-model="merchantFilter" placeholder="全部商家" clearable filterable style="width:200px">
+        <el-option v-for="m in merchants" :key="m" :label="m" :value="m" />
+      </el-select>
+      <el-button @click="selectAllFiltered">全选</el-button>
+      <el-button @click="selectedSkus=[]">清空</el-button>
+      <el-tag type="success" style="margin-left:auto">已选 {{ selectedSkus.length }} 个</el-tag>
+    </div>
+    <el-table :data="filtered" border stripe max-height="420" row-key="id">
+      <el-table-column width="50" align="center">
+        <template #header>
+          <el-checkbox :model-value="allFilteredSelected" @change="toggleAllFiltered" />
+        </template>
+        <template #default="{row}">
+          <el-checkbox :model-value="selectedSkus.includes(row.id)" @change="(v)=>toggleSel(row,v)" />
+        </template>
+      </el-table-column>
+      <el-table-column label="图片" width="70" align="center">
+        <template #default="{row}"><div class="img-wrap"><el-image :src="row.img" fit="cover" :preview-src-list="row.img ? [row.img] : []" :preview-teleported="true" /></div></template>
+      </el-table-column>
+      <el-table-column prop="sku" label="SKU / 机制" width="120" show-overflow-tooltip />
+      <el-table-column prop="name" label="商品名称" min-width="140" />
+      <el-table-column label="规格" width="120" show-overflow-tooltip>
+        <template #default="{row}"><span style="font-size:12px;color:#606266">{{ row.spec || '—' }}</span></template>
+      </el-table-column>
+      <el-table-column label="商家" min-width="130" show-overflow-tooltip>
+        <template #default="{row}"><span style="font-size:12px;color:#606266">{{ row.merchant || '—' }}</span></template>
+      </el-table-column>
+      <el-table-column label="分类" width="100"><template #default="{row}"><el-tag size="small">{{ row.category }}</el-tag></template></el-table-column>
+      <el-table-column prop="cost_price" label="成本价" width="90" align="center">
+        <template #default="{row}">¥{{ row.cost_price }}</template>
+      </el-table-column>
+      <el-table-column prop="shipping_fee" label="代发费" width="85" align="center">
+        <template #default="{row}"><span :style="{color: row.shipping_fee > 0 ? '#606266' : '#c0c4cc'}">¥{{ row.shipping_fee || 0 }}</span></template>
+      </el-table-column>
+    </el-table>
+    <div style="margin-top:16px;display:flex;justify-content:space-between">
+      <el-button @click="goStep(0)">← 返回</el-button>
+      <el-button type="primary" :disabled="!selectedSkus.length" @click="goStep(2)">下一步：商品定价 →</el-button>
+    </div>
+  </div>
+
+  <!-- STEP 2 定价 -->
+  <div class="card" v-show="active===2">
+    <h2 style="margin:0 0 14px;font-size:17px">③ 商品定价</h2>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+      <el-radio-group v-model="mode">
+        <el-radio-button value="price">按销售价格</el-radio-button>
+        <el-radio-button value="margin">按目标利润率</el-radio-button>
+      </el-radio-group>
+      <span style="color:#909399;font-size:13px">批量：</span>
+      <el-input-number v-model="batchVal" :min="0" :step="mode==='price'?1:5" controls-position="right" style="width:150px" :placeholder="mode==='price'?'售价如 199':'利润率如 60'" />
+      <el-button @click="batchApply">应用到已选</el-button>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+      <span style="color:#606266;font-size:13px;font-weight:600">做什么货盘：</span>
+      <el-radio-group v-model="planType">
+        <el-radio-button value="public">🔵 公域货盘（8 列）</el-radio-button>
+        <el-radio-button value="private">🟣 私域货盘（22 列）</el-radio-button>
+      </el-radio-group>
+      <span v-if="planType==='public'" style="color:#606266;font-size:13px">佣金下调（百分点）：</span>
+      <el-input-number v-if="planType==='public'" v-model="commissionCut" :min="0" :max="100" :step="0.5" :precision="1" controls-position="right" style="width:130px" />
+      <el-button v-if="planType==='public'" @click="cutApplyAll">应用到全部</el-button>
+      <span v-if="planType==='public'" style="color:#606266;font-size:13px">平台费（%）：</span>
+      <el-input-number v-if="planType==='public'" v-model="feeRate" :min="0" :max="50" :step="0.5" :precision="1" controls-position="right" style="width:100px" />
+      <span v-if="planType==='public'" style="color:#606266;font-size:13px">税费（%）：</span>
+      <el-input-number v-if="planType==='public'" v-model="taxRate" :min="0" :max="30" :step="0.5" :precision="1" controls-position="right" style="width:100px" />
+      <span v-if="planType==='private'" style="color:#606266;font-size:13px">税率（%）：</span>
+      <el-input-number v-if="planType==='private'" v-model="planTaxPct" :min="0" :max="30" :step="0.5" :precision="1" controls-position="right" style="width:120px" />
+      <span v-if="planType==='private'" style="color:#606266;font-size:13px">成本上调%：</span>
+      <el-input-number v-if="planType==='private'" v-model="markupAllVal" :min="0" :max="100" :step="0.5" :precision="1" controls-position="right" style="width:110px" placeholder="如 5" />
+      <el-button v-if="planType==='private'" @click="markupApplyAll">应用到全部</el-button>
+    </div>
+    <el-table :data="selectedProducts" border stripe max-height="420">
+      <el-table-column label="图片" width="70" align="center">
+        <template #default="{row}"><div class="img-wrap"><el-image :src="row.img" fit="cover" :preview-src-list="row.img ? [row.img] : []" :preview-teleported="true" /></div></template>
+      </el-table-column>
+      <el-table-column prop="sku" label="SKU" width="110" />
+      <el-table-column prop="name" label="商品名称" min-width="140" />
+      <el-table-column prop="cost_price" label="成本价" width="90" align="center">
+        <template #default="{row}">¥{{ row.cost_price }}</template>
+      </el-table-column>
+      <el-table-column prop="shipping_fee" label="代发费" width="85" align="center">
+        <template #default="{row}"><span :style="{color: row.shipping_fee > 0 ? '#606266' : '#c0c4cc'}">¥{{ row.shipping_fee || 0 }}</span></template>
+      </el-table-column>
+      <el-table-column :label="mode==='price'?'销售价(元)':'目标利润率(%)'" width="180">
+        <template #default="{row}">
+          <el-input-number v-model="pricing[row.id]" :min="0" :step="mode==='price'?1:1" controls-position="right" style="width:150px" />
+        </template>
+      </el-table-column>
+      <el-table-column v-if="planType==='public'" label="佣金下调%" width="130" align="center">
+        <template #default="{row}">
+          <el-input-number v-model="cutItem[row.id]" :min="0" :max="100" :step="0.5" :precision="1" controls-position="right" style="width:110px" placeholder="0" />
+        </template>
+      </el-table-column>
+      <el-table-column v-if="planType==='public'" label="佣金(%)" width="100" align="right">
+        <template #default="{row}">{{ priced(row.id)?fmt(compute(row.id).commRate)+'%':'—' }}</template>
+      </el-table-column>
+      <el-table-column v-if="planType==='private'" label="成本上调%" width="130" align="center">
+        <template #default="{row}">
+          <el-input-number v-model="markup[row.id]" :min="0" :max="100" :step="0.5" :precision="1" controls-position="right" style="width:110px" placeholder="0" />
+        </template>
+      </el-table-column>
+      <el-table-column label="利润" width="100" align="right">
+        <template #default="{row}">{{ priced(row.id)?'¥'+fmt(compute(row.id).profit):'—' }}</template>
+      </el-table-column>
+      <el-table-column label="平台费" width="90" align="right">
+        <template #default="{row}">{{ priced(row.id)?'¥'+fmt(compute(row.id).fee):'—' }}</template>
+      </el-table-column>
+      <el-table-column label="税费" width="90" align="right">
+        <template #default="{row}">{{ priced(row.id)?'¥'+fmt(compute(row.id).tax):'—' }}</template>
+      </el-table-column>
+      <el-table-column label="利润率" width="160">
+        <template #default="{row}">
+          <el-tag v-if="priced(row.id)" :type="marginType(compute(row.id).marginPct)" effect="light">
+            {{ fmt(compute(row.id).marginPct) }}% · {{ marginWord(compute(row.id).marginPct) }}
+          </el-tag>
+          <span v-else style="color:#c0c4cc">—</span>
+        </template>
+      </el-table-column>
+    </el-table>
+    <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">
+      <el-tag type="info">已定价 {{ pricedCount }} / {{ selectedSkus.length }}</el-tag>
+      <div>
+        <el-button @click="goStep(1)">← 返回</el-button>
+        <el-button type="primary" :disabled="!allPriced" @click="goStep(3)">下一步：利润预览 →</el-button>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 3 预览 -->
+  <div class="card" v-show="active===3">
+    <h2 style="margin:0 0 14px;font-size:17px">④ 利润率实时预览</h2>
+    <el-table :data="previewRows" border stripe max-height="420">
+      <el-table-column label="图片" width="70" align="center">
+        <template #default="{row}"><div class="img-wrap"><el-image :src="row.img" fit="cover" :preview-src-list="row.img ? [row.img] : []" :preview-teleported="true" /></div></template>
+      </el-table-column>
+      <el-table-column prop="sku" label="SKU" width="110" />
+      <el-table-column prop="name" label="商品名称" min-width="140" />
+      <el-table-column label="成本价" width="90" align="center"><template #default="{row}">¥{{ fmt(row.cost) }}</template></el-table-column>
+      <el-table-column label="销售价（直播价）" width="120" align="right"><template #default="{row}">¥{{ fmt(row.price) }}</template></el-table-column>
+      <el-table-column label="利润" width="100" align="right"><template #default="{row}">¥{{ fmt(row.profit) }}</template></el-table-column>
+      <el-table-column label="平台费" width="90" align="right"><template #default="{row}">¥{{ fmt(row.fee) }}</template></el-table-column>
+      <el-table-column label="税费" width="90" align="right"><template #default="{row}">¥{{ fmt(row.tax) }}</template></el-table-column>
+      <el-table-column label="利润率" width="120">
+        <template #default="{row}"><el-tag :type="marginType(row.marginPct)" effect="light">{{ fmt(row.marginPct) }}%</el-tag></template>
+      </el-table-column>
+    </el-table>
+    <div style="margin-top:16px;display:flex;justify-content:space-between">
+      <el-button @click="goStep(2)">← 返回</el-button>
+      <el-button type="primary" @click="goStep(4)">下一步：生成货盘 →</el-button>
+    </div>
+  </div>
+
+  <!-- STEP 4 生成 -->
+  <div class="card" v-show="active===4">
+    <h2 style="margin:0 0 14px;font-size:17px">⑤ 生成货盘 Excel</h2>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+      <div><div style="font-size:12px;color:#909399;margin-bottom:5px">货盘文件名称</div>
+        <el-input v-model="fileName" style="width:240px" />
+      </div>
+      <div><div style="font-size:12px;color:#909399;margin-bottom:5px">货盘主标题（Excel 首行大标题，可留空）</div>
+        <el-input v-model="planTitle" style="width:320px" placeholder="如：9 月服饰私域货盘" clearable />
+      </div>
+    </div>
+
+    <div style="margin:14px 0">
+      <el-collapse v-model="llmCollapse" accordion>
+        <el-collapse-item title="⚙️ 模型 API 配置（预留，不参与生成）" name="llm">
+          <el-form :model="llmForm" label-width="110px" label-position="left">
+            <el-form-item label="API Base URL">
+              <el-input v-model="llmForm.base_url" placeholder="http://localhost:11434/v1" clearable />
+            </el-form-item>
+            <el-form-item label="API Key">
+              <el-input v-model="llmForm.api_key" type="password" show-password placeholder="Ollama 可留空" clearable />
+            </el-form-item>
+            <el-form-item label="模型名称">
+              <el-input v-model="llmForm.model" placeholder="qwen2.5:7b" clearable />
+            </el-form-item>
+            <el-form-item>
+              <div style="display:flex;gap:8px;align-items:center">
+                <el-button type="primary" @click="saveLlmConfig" :loading="llmSaving">保存配置</el-button>
+                <el-tag v-if="llmStatus" :type="llmStatus.type" size="small">{{ llmStatus.text }}</el-tag>
+              </div>
+              <div style="margin-top:8px;font-size:12px;color:#909399;line-height:1.6">
+                该配置当前<b>不参与货盘生成</b>，仅为后续选品 Agent 预留。
+              </div>
+            </el-form-item>
+          </el-form>
+        </el-collapse-item>
+      </el-collapse>
+    </div>
+    <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">
+      <el-tag type="info">待生成：{{ selectedSkus.length }} 个商品</el-tag>
+      <div>
+        <el-button @click="goStep(3)">← 返回</el-button>
+        <el-button type="primary" :loading="generating" :icon="MagicStick" @click="generate">
+          {{ generating?'后端生成中…':'提交后端生成 Excel' }}
+        </el-button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 登录 -->
+  <el-dialog v-model="loginVisible" title="登录" width="380px" :close-on-click-modal="false" :show-close="false">
+    <el-form label-width="70px">
+      <el-form-item label="用户名"><el-input v-model="loginForm.username" placeholder="admin" /></el-form-item>
+      <el-form-item label="密码"><el-input v-model="loginForm.password" type="password" show-password placeholder="admin123" @keyup.enter="doLogin" /></el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button type="primary" :loading="logging" @click="doLogin">登录</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 文件管理 -->
+  <el-dialog v-model="filesVisible" title="📁 文件管理" width="680px">
+    <el-table :data="generated" border stripe>
+      <el-table-column prop="name" label="文件名称" min-width="150" />
+      <el-table-column label="类型" width="90" align="center">
+        <template #default="{row}">
+          <el-tag size="small" :type="row.plan_type==='private' ? 'warning' : 'primary'">{{ row.plan_type==='private' ? '私域' : '公域' }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="time" label="生成时间" width="150" />
+      <el-table-column prop="rows" label="商品数" width="70" align="center" />
+      <el-table-column label="操作" width="210" align="center">
+        <template #default="{row}">
+          <el-button size="small" type="primary" plain :icon="View" @click="openPreview(row)">预览</el-button>
+          <el-button size="small" :icon="Download" @click="downloadGen(row)">下载</el-button>
+          <el-button size="small" type="danger" :icon="Delete" @click="deleteGen(row)">删除</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+    <el-empty v-if="!generated.length" description="暂无货盘记录" />
+    <template #footer><el-button @click="filesVisible=false">关闭</el-button></template>
+  </el-dialog>
+
+  <!-- 上传文件管理（v7.13）：上传的成本货盘 Excel 存档，可下载/恢复/删除 -->
+  <el-dialog v-model="uploadsVisible" title="📤 上传文件管理" width="760px">
+    <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px"
+              title="每次上传商品库 Excel 都会存档原件，可随时下载或恢复到当时的商品库" />
+    <el-table :data="uploads" border stripe>
+      <el-table-column prop="filename" label="文件名" min-width="170" show-overflow-tooltip />
+      <el-table-column prop="merchant" label="商家" min-width="110" show-overflow-tooltip>
+        <template #default="{row}">{{ row.merchant || '—' }}</template>
+      </el-table-column>
+      <el-table-column prop="product_count" label="商品数" width="70" align="center" />
+      <el-table-column label="大小" width="80" align="center">
+        <template #default="{row}">{{ fmtSize(row.file_size) }}</template>
+      </el-table-column>
+      <el-table-column prop="create_time" label="上传时间" width="135" />
+      <el-table-column label="状态" width="85" align="center">
+        <template #default="{row}">
+          <el-tag size="small" :type="row.is_active ? 'success' : 'info'">{{ row.is_active ? '使用中' : '历史' }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="215" align="center">
+        <template #default="{row}">
+          <el-button size="small" :icon="Download" @click="downloadUploadFile(row)">下载</el-button>
+          <el-button v-if="isAdmin" size="small" type="primary" plain :icon="RefreshRight" @click="restoreUpload(row)">恢复</el-button>
+          <el-button v-if="isAdmin" size="small" type="danger" :icon="Delete" @click="deleteUpload(row)" />
+        </template>
+      </el-table-column>
+    </el-table>
+    <el-empty v-if="!uploads.length" description="暂无上传记录" />
+    <template #footer><el-button @click="uploadsVisible=false">关闭</el-button></template>
+  </el-dialog>
+
+  <!-- 货盘可视化预览（卡片墙，按货盘类型渲染） -->
+  <el-dialog v-model="previewVisible" width="980px" top="4vh" :close-on-click-modal="false">
+    <template #header>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="font-size:16px;font-weight:700">{{ previewPlan.name || '货盘预览' }}</span>
+        <el-tag size="small" :type="previewPlan.plan_type==='private' ? 'warning' : 'primary'">
+          {{ previewPlan.plan_type==='private' ? '🟣 私域货盘' : '🔵 公域货盘' }}
+        </el-tag>
+        <el-tag size="small" type="info">{{ previewPlan.rows || 0 }} 个商品</el-tag>
+        <el-tag v-if="previewPlan.plan_type!=='private' && previewPlan.commission_cut > 0" size="small" type="warning">
+          佣金已下调 {{ previewPlan.commission_cut }} 个点
+        </el-tag>
+        <el-tag v-if="previewPlan.plan_type==='private' && previewPlan.tax_rate > 0" size="small" type="info">
+          税率 {{ Math.round((previewPlan.tax_rate||0)*10000)/100 }}%
+        </el-tag>
+        <el-tag v-if="previewPlan.plan_type!=='private'" size="small" type="success">{{ previewPlan.cost_mode === 'collect' ? '集采口径' : '一件代发口径' }}</el-tag>
+        <span style="font-size:12px;color:#909399">{{ previewPlan.create_time }}</span>
+      </div>
+    </template>
+    <div v-loading="previewLoading" style="min-height:200px">
+      <template v-if="!previewLoading && previewItems.length">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px">
+          <div v-for="it in previewItems" :key="it.id" class="plan-card">
+            <div class="plan-card-img">
+              <el-image v-if="it.image_url" :src="it.image_url" :preview-src-list="[it.image_url]" fit="cover" style="width:100%;height:100%" preview-teleported hide-on-click-modal />
+              <div v-else style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#e9d5ff,#f3e8ff);color:#8b5cf6;font-size:28px">🛍️</div>
+            </div>
+            <div style="padding:10px 12px 12px">
+              <div style="font-size:12px;color:#7c3aed;font-weight:600;margin-bottom:3px">{{ it.sku }}</div>
+              <div class="plan-card-name" :title="it.name">{{ it.name }}</div>
+              <div v-if="it.spec" style="font-size:11px;color:#909399;margin-top:2px">规格：{{ it.spec }}</div>
+              <!-- 公域卡片：销售价 + 佣金 -->
+              <template v-if="previewPlan.plan_type!=='private'">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px">
+                  <el-tag size="small" effect="plain" type="warning">{{ it.category }}</el-tag>
+                  <span style="font-size:16px;font-weight:800;color:#dc2626">¥{{ fmt(it.sale_price) }}</span>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
+                  <span style="font-size:12px;color:#909399">佣金</span>
+                  <span style="font-size:14px;font-weight:700;color:#059669">{{ it.commission }}%</span>
+                </div>
+              </template>
+              <!-- 私域卡片：直播价 / 一件代发价 / 毛利率 / 集采价 -->
+              <template v-else>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px">
+                  <span style="font-size:12px;color:#909399">直播价</span>
+                  <span style="font-size:16px;font-weight:800;color:#dc2626">¥{{ fmt(it.sale_price) }}</span>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
+                  <span style="font-size:12px;color:#909399">一件代发价</span>
+                  <span style="font-size:13px;font-weight:700;color:#1f2330">¥{{ fmt(it.daifa_price) }}</span>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
+                  <span style="font-size:12px;color:#909399">毛利率（不含税）</span>
+                  <span style="font-size:14px;font-weight:700;color:#059669">{{ it.margin }}%</span>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
+                  <span style="font-size:12px;color:#909399">集采价</span>
+                  <span style="font-size:13px;font-weight:700;color:#6b7280">¥{{ fmt(it.collect_price) }}</span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </template>
+      <el-empty v-else-if="!previewLoading" description="该货盘暂无商品" />
+    </div>
+    <template #footer>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:12px;color:#c0c4cc">图片点击可放大查看原图</span>
+        <div>
+          <el-button @click="previewVisible=false">关闭</el-button>
+          <el-button type="primary" :icon="Download" @click="downloadGen(previewPlan)">下载 Excel</el-button>
+        </div>
+      </div>
+    </template>
+  </el-dialog>
+
+  </div>
+  `,
+  setup(){
+    const active = ref(0);
+    const products = ref([]);
+    const selectedSkus = ref([]);   // v7.12：存商品 id（数据库主键）而非 sku——sku(机制) 在真实成本表里大量重名，不能作唯一标识
+    const mode = ref('price');
+    const pricing = reactive({});
+    const markup = reactive({});   // v7.2 私域：每件商品的一件代发价上浮百分点（key=sku）
+    const cutItem = reactive({});  // v7.4 公域：每件商品的佣金下调百分点（key=sku）
+    const search = ref('');
+    const catFilter = ref('');
+    const merchantInput = ref('');   // 上传时手动填写的商家名（优先于自动识别）
+    const merchantFilter = ref('');  // 商品列表按商家筛选
+    const merchants = ref([]);      // 库内去重商家清单
+    const batchVal = ref(null);
+    const markupAllVal = ref(null);   // v7.3 私域：一键上调%（批量填充所有商品的一件代发价上调%）
+    const fileName = ref('新货盘');
+    const planTitle = ref('');       // v7.1 货盘主标题：非空时写 Excel 首行大标题
+    const planType = ref('public');   // v7 货盘类型：'public'=公域 8 列 | 'private'=私域 22 列
+    const planTaxPct = ref(9);        // v7 私域税率（%），含税价 = 不含税 × (1 + 税率/100)
+    const commissionCut = ref(0);   // 佣金下调（百分点）：仅公域货盘
+    const costMode = ref('daifa');   // 成本模式：'daifa'=一件代发(出厂价+代发费) | 'collect'=集采(出厂价)
+    const generated = ref([]);
+    const filesVisible = ref(false);
+    const uploadsVisible = ref(false);   // v7.13 上传文件管理
+    const uploads = ref([]);
+    // 货盘可视化预览（按 plan_type 渲染）
+    const previewVisible = ref(false);
+    const previewPlan = ref({});
+    const previewItems = ref([]);
+    const previewLoading = ref(false);
+    const generating = ref(false);
+    const llmCollapse = ref('');
+    const llmForm = reactive({ base_url: '', api_key: '', model: '' });
+    const llmSaving = ref(false);
+    const llmStatus = ref(null);
+    // §6 利润扣减：平台服务费费率 / 税费率（输入按 % 计，内部换算为小数）
+    const feeRate = ref(6);
+    const taxRate = ref(1);
+
+    const loggedUser = ref(localStorage.getItem('hp_user') || '');
+    const userRole = ref(localStorage.getItem('hp_role') || '');
+    const isAdmin = computed(() => userRole.value === 'admin');
+    const loginVisible = ref(!loggedUser.value);
+    const loginForm = reactive({ username: 'admin', password: 'admin123' });
+    const logging = ref(false);
+
+    const hasProducts = computed(() => products.value.length > 0);
+    const categories = computed(() => [...new Set(products.value.map(p => p.category))]);
+    const filtered = computed(() => {
+      const q = search.value.trim().toLowerCase();
+      return products.value.filter(p => {
+        if (catFilter.value && p.category !== catFilter.value) return false;
+        if (merchantFilter.value && (p.merchant || '') !== merchantFilter.value) return false;
+        if (q && !(p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q))) return false;
+        return true;
+      });
+    });
+    const allFilteredSelected = computed(() =>
+      filtered.value.length > 0 && filtered.value.every(p => selectedSkus.value.includes(p.id)));
+    const selectedProducts = computed(() =>
+      products.value.filter(p => selectedSkus.value.includes(p.id)));
+
+    function compute(pid){
+      const p = products.value.find(x => x.id === pid); if (!p) return null;
+      // 成本口径：一件代发 = 出厂价 + 快递代发费；集采 = 出厂价
+      const base = Number(p.cost_price) || 0;
+      const fee = costMode.value === 'daifa' ? (Number(p.shipping_fee) || 0) : 0;
+      const cost = base + fee;
+      const raw = pricing[pid];
+      const f = (Number(feeRate.value) || 0) / 100;   // 输入为百分比，内部换算小数
+      const t = (Number(taxRate.value) || 0) / 100;
+      const cut = (Number(cutItem[pid]) || 0);        // 佣金下调百分点
+      if (mode.value === 'price'){
+        const sale_price = Number(raw) || 0;
+        const r = api.calculateProfit(cost, sale_price, f, t);
+        const commRate = Math.max(0, r.profit_rate - cut);
+        const commission = +(sale_price * commRate / 100).toFixed(2);
+        return { cost, price: sale_price, profit: r.profit, marginPct: r.profit_rate, fee: r.fee, tax: r.tax, commission, commRate };
+      } else {
+        const target = Number(raw) || 0;
+        const r = api.calculatePrice(cost, target/100, f, t);
+        const price = r.sale_price;
+        const cr = api.calculateProfit(cost, price, f,  t);
+        const commRate = Math.max(0, cr.profit_rate - cut);
+        const commission = +(price * commRate / 100).toFixed(2);
+        return { cost, price, profit: cr.profit, marginPct: cr.profit_rate, fee: cr.fee, tax: cr.tax, commission, commRate };
+      }
+    }
+    const priced = (pid) => Number(pricing[pid]) > 0;
+    const pricedCount = computed(() => selectedSkus.value.filter(s => priced(s)).length);
+    const allPriced = computed(() => selectedSkus.value.length > 0 && pricedCount.value === selectedSkus.value.length);
+
+    const previewRows = computed(() => selectedProducts.value.map(p => {
+      const c = compute(p.id);
+      return { sku:p.sku, name:p.name, img:p.img, cost:c.cost, price:c.price, profit:c.profit, marginPct:c.marginPct, fee:c.fee, tax:c.tax };
+    }));
+    const summary = computed(() => {
+      const rows = previewRows.value;
+      const cost = rows.reduce((s,r) => s + r.cost, 0);
+      const price = rows.reduce((s,r) => s + r.price, 0);
+      const fee = rows.reduce((s,r) => s + (r.fee || 0), 0);
+      const tax = rows.reduce((s,r) => s + (r.tax || 0), 0);
+      const profit = rows.reduce((s,r) => s + (r.profit || 0), 0);
+      const avg = price > 0 ? profit / price * 100 : 0;
+      return { cost, price, fee, tax, profit, avg };
+    });
+
+    function toggleSel(row, v){ v ? addSel(row.id) : removeSel(row.id); }
+    function addSel(pid){ if (!selectedSkus.value.includes(pid)) selectedSkus.value.push(pid); }
+    function removeSel(pid){ selectedSkus.value = selectedSkus.value.filter(s => s !== pid); }
+    function toggleAllFiltered(v){ filtered.value.forEach(p => v ? addSel(p.id) : removeSel(p.id)); }
+    function selectAllFiltered(){ filtered.value.forEach(p => addSel(p.id)); }
+
+    function batchApply(){
+      if (batchVal.value == null) { Msg.warning('请输入批量数值'); return; }
+      selectedSkus.value.forEach(s => pricing[s] = batchVal.value);
+      Msg.success('已应用到 ' + selectedSkus.value.length + ' 个商品');
+    }
+
+    function markupApplyAll(){
+      if (markupAllVal.value == null) { Msg.warning('请输入成本上调%'); return; }
+      if (planType.value !== 'private') return;
+      selectedSkus.value.forEach(s => markup[s] = markupAllVal.value);
+      Msg.success('已为 ' + selectedSkus.value.length + ' 个商品设置成本上调 ' + markupAllVal.value + '%（可再单独调整）');
+    }
+
+    function cutApplyAll(){
+      if (commissionCut.value == null) { Msg.warning('请输入佣金下调（百分点）'); return; }
+      if (planType.value !== 'public') return;
+      selectedSkus.value.forEach(s => cutItem[s] = commissionCut.value);
+      Msg.success('已为 ' + selectedSkus.value.length + ' 个商品设置佣金下调 ' + commissionCut.value + ' 个点（可再单独调整）');
+    }
+
+    function mapProduct(r){
+      return {
+        id: r.id, sku: r.sku, name: r.name, cost_price: r.cost_price,
+        shipping_fee: Number(r.shipping_fee) || 0,
+        merchant: r.merchant || '',
+        category: r.category || '其他', remark: r.remark,
+        // v7 新字段（私域 22 列 / 公域规格列）
+        spec: r.spec || '',
+        product_type: r.product_type || '',
+        ingredients: r.ingredients || '',
+        stock: r.stock || '',
+        origin: r.origin || '',
+        lead_time: r.lead_time || '',
+        shelf_life: r.shelf_life || '',
+        after_sales: r.after_sales || '',
+        market_price: r.market_price || '',
+        excluded_regions: r.excluded_regions || '',
+        image_url: r.image_url || '',
+        img: r.image_url || makeImg(r.name, r.category || '其他')
+      };
+    }
+
+    async function refreshProducts(){
+      try {
+        const d = await api.listProducts();
+        products.value = d.rows.map(mapProduct);
+        merchants.value = d.merchants;
+      } catch(e){ Msg.error(e.message); }
+    }
+
+    async function doLogin(){
+      logging.value = true;
+      try {
+        const d = await api.login(loginForm.username, loginForm.password);
+        loggedUser.value = loginForm.username;
+        userRole.value = d.role || 'user';
+        localStorage.setItem('hp_user', loginForm.username);
+        localStorage.setItem('hp_role', userRole.value);
+        loginVisible.value = false;
+        Msg.success('登录成功');
+        await refreshProducts();
+        await loadLlmConfig();
+        await loadGenerated();   // 货盘记录（持久化）
+      } catch(e){ Msg.error(e.message); }
+      logging.value = false;
+    }
+    // 刷新页面时用 /api/auth/me 恢复角色（避免老登录态丢失 hp_role 后误判为普通用户）
+    async function loadMe(){
+      if (!api.token) return;
+      try {
+        const r = await fetch(API_BASE + '/auth/me', { headers: { 'Authorization': 'Bearer ' + api.token } });
+        if (r.ok) { const d = await r.json(); userRole.value = d.role || 'user'; localStorage.setItem('hp_role', userRole.value); }
+        else if (r.status === 401) logout(true);   // token 已过期：自动回登录页，不再静默停留假登录态
+      } catch(e){ /* 网络异常保持现状 */ }
+    }
+    if (loggedUser.value) loadMe();
+    function logout(silent){
+      api.token = ''; loggedUser.value = ''; userRole.value = '';
+      localStorage.removeItem('hp_token'); localStorage.removeItem('hp_user'); localStorage.removeItem('hp_role');
+      products.value = []; loginVisible.value = true;
+      Msg.info(silent ? '登录已过期，请重新登录' : '已退出登录');
+    }
+    // 任何接口 401（token 过期/无效）→ 自动退回登录页（手动退出走 logout() 不受影响）
+    window.addEventListener('hp-unauthorized', () => { if (api.token) logout(true); });
+
+    async function loadSample(){
+      try {
+        const d = await api.seedSample();
+        Msg.success('已初始化示例商品库（新增 ' + d.inserted + ' 个）');
+        await refreshProducts();
+        selectedSkus.value = products.value.map(p => p.id);
+        Object.keys(pricing).forEach(k => delete pricing[k]);
+        Object.keys(markup).forEach(k => delete markup[k]);
+        Object.keys(cutItem).forEach(k => delete cutItem[k]);
+        products.value.forEach(p => pricing[p.id] = Math.round(p.cost_price * 2.5));
+      } catch(e){ Msg.error(e.message); }
+    }
+
+    async function onUploadChange(file){
+      const raw = file.raw; if (!raw) return;
+      try {
+        const d = await api.uploadProduct(raw, merchantInput.value);
+        Msg.success('已上传 ' + d.inserted + ' 个商品，商家：' + d.merchant);
+        merchantInput.value = '';
+        merchantFilter.value = '';
+        await refreshProducts();
+        await loadUploads();
+        selectedSkus.value = products.value.map(p => p.id);
+        Object.keys(pricing).forEach(k => delete pricing[k]);
+        Object.keys(markup).forEach(k => delete markup[k]);
+        Object.keys(cutItem).forEach(k => delete cutItem[k]);
+        products.value.forEach(p => pricing[p.id] = Math.round(p.cost_price * 2.5));
+      } catch(e){ Msg.error(e.message); }
+    }
+
+    async function exportTemplate(){
+      try {
+        const blob = await api.downloadTemplate();
+        downloadBlob(blob, '商品库导入模板.xlsx');
+        Msg.success('模板已下载');
+      } catch(e){ Msg.error(e.message); }
+    }
+
+    async function generate(){
+      if (!allPriced.value) { Msg.warning('请先完成全部商品定价'); return; }
+      generating.value = true;
+      const list = selectedProducts.value;
+      const fname = (fileName.value || '新货盘') + '.xlsx';
+      try {
+        const items = list.map(p => {
+          const c = compute(p.id);
+          return {
+            product_id: p.id,   // v7.12 补传商品主键（此前缺失，明细无法关联商品/原图）
+            sku: p.sku, name: p.name, image_url: p.img,
+            cost_price: Number(p.cost_price) || 0,
+            shipping_fee: Number(p.shipping_fee) || 0,
+            sale_price: c.price,
+            pricing_mode: mode.value, category: p.category, remark: p.remark,
+            merchant: p.merchant,
+            // v7 新字段透传（公域用 spec；私域全量）
+            spec: p.spec, product_type: p.product_type, ingredients: p.ingredients,
+            stock: p.stock, origin: p.origin, lead_time: p.lead_time,
+            shelf_life: p.shelf_life, after_sales: p.after_sales,
+            market_price: p.market_price, excluded_regions: p.excluded_regions,
+            markup_pct: Number(markup[p.id]) || 0,  // v7.2 私域一件代发价上浮%
+            commission_cut: Number(cutItem[p.id]) || 0  // v7.4 公域逐商品佣金下调（百分点）
+          };
+        });
+        const blob = await api.generatePlan({
+          name: fileName.value || '新货盘',
+          title: (planTitle.value || '').trim(),
+          commission_cut: Number(commissionCut.value) || 0,
+          cost_mode: costMode.value,
+          plan_type: planType.value,
+          tax_rate: (Number(planTaxPct.value) || 0) / 100,
+          fee_rate: (Number(feeRate.value) || 0) / 100,
+          items
+        });
+        downloadBlob(blob, fname);
+        Msg.success('货盘已生成并下载：' + fname);
+        // 同步后端货盘记录（v7.9：去掉生成后自动弹出的卡片墙预览）
+        await loadGenerated();
+      } catch(err){ Msg.error('生成失败：' + err.message); }
+      generating.value = false;
+    }
+
+    // ---- 货盘记录（后端持久化）+ 可视化预览 ----
+    async function loadGenerated(){
+      try {
+        const d = await api.listPlans();
+        generated.value = (d || []).map(p => ({
+          id: p.id, name: p.name + '.xlsx', time: p.create_time, rows: p.rows,
+          commission_cut: p.commission_cut, cost_mode: p.cost_mode,
+          plan_type: p.plan_type || 'public', tax_rate: p.tax_rate || 0
+        }));
+      } catch(e){ Msg.error(e.message); }
+    }
+    async function openPreview(row){
+      previewVisible.value = true;
+      previewLoading.value = true;
+      previewItems.value = [];
+      previewPlan.value = { ...row };
+      try {
+        const d = await api.getPlan(row.id);
+        previewPlan.value = { ...row, ...d, name: (d.name || row.name || '').replace(/\.xlsx$/i,'') };
+        previewItems.value = d.items || [];
+      } catch(e){ Msg.error('加载预览失败：' + e.message); }
+      previewLoading.value = false;
+    }
+    async function downloadGen(row){
+      try {
+        if (row.id && String(row.id).indexOf('g') !== 0) {
+          const blob = await api.downloadPlan(row.id);
+          downloadBlob(blob, (row.name || '货盘').replace(/\.xlsx$/i,'') + '.xlsx');
+        } else if (row.url) {
+          downloadBlobUrl(row.url, row.name || '货盘.xlsx');
+        } else {
+          Msg.warning('该记录缺少下载数据');
+        }
+      } catch(e){ Msg.error(e.message); }
+    }
+    async function deleteGen(row){
+      try {
+        await ElMessageBox.confirm('确定删除货盘「' + row.name + '」？', '删除确认', { type: 'warning' });
+        await api.deletePlan(row.id);
+        generated.value = generated.value.filter(x => x.id !== row.id);
+        if (previewVisible.value && previewPlan.value.id === row.id) previewVisible.value = false;
+        Msg.success('已删除');
+      } catch(e){ if (e !== 'cancel' && e !== 'close') Msg.error(e.message); }
+    }
+
+    // ---- 上传文件管理（v7.13）----
+    function fmtSize(n){
+      if (!n) return '—';
+      if (n < 1024) return n + ' B';
+      if (n < 1024*1024) return (n/1024).toFixed(1) + ' KB';
+      return (n/1024/1024).toFixed(2) + ' MB';
+    }
+    async function loadUploads(){
+      try { uploads.value = await api.listUploads(); }
+      catch(e){ Msg.error(e.message); }
+    }
+    async function downloadUploadFile(row){
+      try {
+        const blob = await api.downloadUpload(row.id);
+        downloadBlob(blob, row.filename || '上传文件.xlsx');
+      } catch(e){ Msg.error(e.message); }
+    }
+    async function restoreUpload(row){
+      try {
+        await ElMessageBox.confirm(
+          '恢复后当前商品库将被「' + row.filename + '」的内容整体替换，确定恢复？',
+          '恢复商品库', { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' });
+        const d = await api.restoreUpload(row.id);
+        Msg.success('已恢复 ' + d.inserted + ' 个商品，商家：' + (d.merchant || '未识别'));
+        await loadUploads();
+        await refreshProducts();
+        selectedSkus.value = products.value.map(p => p.id);
+        Object.keys(pricing).forEach(k => delete pricing[k]);
+        Object.keys(markup).forEach(k => delete markup[k]);
+        Object.keys(cutItem).forEach(k => delete cutItem[k]);
+        products.value.forEach(p => pricing[p.id] = Math.round(p.cost_price * 2.5));
+      } catch(e){ if (e !== 'cancel' && e !== 'close') Msg.error(e.message); }
+    }
+    async function deleteUpload(row){
+      try {
+        await ElMessageBox.confirm('确定删除上传记录「' + row.filename + '」？存档文件将一并删除，不影响当前商品库。', '删除确认', { type: 'warning' });
+        await api.deleteUpload(row.id);
+        uploads.value = uploads.value.filter(x => x.id !== row.id);
+        Msg.success('已删除');
+      } catch(e){ if (e !== 'cancel' && e !== 'close') Msg.error(e.message); }
+    }
+
+    async function loadLlmConfig(){
+      try {
+        const cfg = await api.getLlmConfig();
+        llmForm.base_url = cfg.LLM_BASE_URL || '';
+        llmForm.api_key = cfg.LLM_API_KEY || '';
+        llmForm.model = cfg.LLM_MODEL || '';
+      } catch(e){ Msg.error(e.message); }
+    }
+    async function saveLlmConfig(){
+      llmSaving.value = true;
+      try {
+        const cfg = {
+          LLM_BASE_URL: llmForm.base_url.trim(),
+          LLM_API_KEY: llmForm.api_key.trim(),
+          LLM_MODEL: llmForm.model.trim()
+        };
+        await api.setLlmConfig(cfg);
+        llmStatus.value = { type: 'success', text: '已保存，即时生效' };
+        Msg.success('模型配置已保存');
+      } catch(e){ llmStatus.value = { type: 'danger', text: e.message }; Msg.error(e.message); }
+      llmSaving.value = false;
+    }
+
+    function goStep(n){ active.value = n; window.scrollTo({ top:0, behavior:'smooth' }); }
+
+    return {
+      active, products, selectedSkus, mode, pricing, markup, cutItem, search, catFilter, batchVal, markupAllVal,
+      merchantInput, merchantFilter, merchants,
+      feeRate, taxRate,
+      fileName, planTitle, planType, planTaxPct, commissionCut, costMode, generated, filesVisible, generating, llmCollapse, llmForm, llmSaving, llmStatus,
+      uploadsVisible, uploads,
+      previewVisible, previewPlan, previewItems, previewLoading,
+      loggedUser, loginVisible, loginForm, logging,
+      isAdmin,
+      hasProducts, categories, filtered, allFilteredSelected, selectedProducts,
+      priced, pricedCount, allPriced, previewRows, summary,
+      compute, marginWord, marginType, fmt,
+      toggleSel, toggleAllFiltered, selectAllFiltered, batchApply, markupApplyAll, cutApplyAll,
+      doLogin, logout, loadSample, onUploadChange, exportTemplate, generate, downloadGen, deleteGen, loadLlmConfig, saveLlmConfig, goStep,
+      loadUploads, downloadUploadFile, restoreUpload, deleteUpload, fmtSize,
+      loadGenerated, openPreview,
+      Folder, Download, MagicStick, UploadFilled, Search, Delete, SwitchButton, Plus, View, Files, RefreshRight
+    };
+  }
+}).use(ElementPlus, window.ElementPlusLocaleZhCn ? { locale: window.ElementPlusLocaleZhCn } : {})
+  .mount('#app');
+</script>
+</body>
+</html>

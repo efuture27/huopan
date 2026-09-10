@@ -1,0 +1,17 @@
+﻿.env
+.env.*
+!.env.example
+
+*.log
+*.zip
+
+node_modules/
+__pycache__/
+*.pyc
+
+dist/
+build/
+
+data/
+outputs/
+.workbuddy/

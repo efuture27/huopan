@@ -1,0 +1,6 @@
+login OK
+upload status=200
+upload resp={"ok": true, "inserted": 51, "merchant": "云南鑫多多农业科技有限公司私域"}
+list rows=51 merchants=['云南鑫多多农业科技有限公司私域']
+with_merchant=51 sample='云南鑫多多农业科技有限公司私域'
+filter rows=51

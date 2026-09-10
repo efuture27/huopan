@@ -1,0 +1,7 @@
+read: 0.2s, 106027658 bytes
+parse: 1.8s
+total=51 with_image=47
+sample image_url prefix: data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD ... len=5739
+img data-url len min/avg/max: 5739 / 16649 / 31455
+first with-image row: {"sku": "1", "name": "鲜花饼", "image_url": "data:image/jpeg;base64,/9j/4AAQSkZJR...", "cost_price": 29.9, "category": "其他", "remark": ""}
+first row: {"sku": "1", "name": "鲜花饼", "image_url": "data:image/jpeg;base64,/9j/4AAQSkZJR...", "cost_price": 29.9, "category": "其他", "remark": ""}
