@@ -7,7 +7,7 @@ from sqlalchemy import text
 from .database import engine, Base, get_db
 from . import models
 from .seed import seed_admin, seed_worker
-from .routers import auth, config, product, profit, plan, merchant_fee
+from .routers import auth, config, output, product, profit, plan, merchant_fee
 from .config import FRONTEND_DIR, DATA_DIR
 
 app = FastAPI(title="货盘助手 API", version="1.0")
@@ -23,6 +23,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(config.router)
+app.include_router(output.router)
 app.include_router(product.router)
 app.include_router(merchant_fee.router)
 app.include_router(profit.router)
@@ -139,6 +140,9 @@ def on_startup():
         # v7.10：公域平台服务费费率快照（导出佣金需扣平台费/税费）
         if "fee_rate" not in pcols:
             conn.execute(text("ALTER TABLE product_plan ADD COLUMN fee_rate FLOAT DEFAULT 0"))
+        # v7.17：货盘 Excel 在本机的落盘路径（开启「保存到本地目录」时写入，便于文件管理里直接打开）
+        if "saved_path" not in pcols:
+            conn.execute(text("ALTER TABLE product_plan ADD COLUMN saved_path VARCHAR(1024)"))
         # v7.2：货盘明细记录私域一件代发价上浮百分点（重新下载/预览还原）
         icols = [r[1] for r in conn.execute(text("PRAGMA table_info(product_plan_item)"))]
         if "markup_pct" not in icols:
@@ -164,7 +168,9 @@ def on_startup():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    # app 标识用于桌面端判断「端口上跑的是不是货盘助手」，避免连到别人的服务
+    from .config import APP_VERSION
+    return {"status": "ok", "app": "huopan", "version": APP_VERSION}
 
 
 # 托管前端静态资源（本地安装版：前端随程序分发，同源访问免 CORS）

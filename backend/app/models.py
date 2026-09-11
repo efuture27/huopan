@@ -56,6 +56,7 @@ class ProductPlan(Base):
     plan_type = Column(String(16), default="public")    # v7 货盘类型：'public'=公域7列 | 'private'=私域22列
     tax_rate = Column(Float, default=0)                 # v7 税率快照（私域含税价 = 不含税 × (1+税率)，如 0.09）
     fee_rate = Column(Float, default=0)                 # v7.10 公域平台服务费费率快照（占售价比例，如 0.06）
+    saved_path = Column(String(1024), nullable=True)    # v7.17 货盘 Excel 在本机的落盘路径（开启保存到本地目录时）
     create_time = Column(DateTime, server_default=func.now())
 
 

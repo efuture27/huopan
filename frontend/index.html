@@ -29,6 +29,38 @@
   .plan-card-img{height:170px;background:#faf9ff;display:flex;align-items:center;justify-content:center;overflow:hidden}
   .plan-card-img img{width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in}
   .plan-card-name{font-size:13px;color:#333;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:38px}
+
+  /* ===== 独立登录页（v7.16）：未登录时整页显示，主界面完全不渲染 ===== */
+  .login-screen{position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;
+    padding:24px;overflow:auto;box-sizing:border-box;
+    background:linear-gradient(160deg,#f5f3ff 0%,#fdf2f8 45%,#eef2ff 100%)}
+  .login-blob{position:absolute;border-radius:50%;filter:blur(60px);opacity:.55;pointer-events:none}
+  .login-blob.b1{width:420px;height:420px;background:#c4b5fd;top:-130px;left:-110px}
+  .login-blob.b2{width:380px;height:380px;background:#f9a8d4;bottom:-150px;right:-100px}
+  .login-blob.b3{width:300px;height:300px;background:#bfdbfe;top:38%;right:12%;opacity:.4}
+  .login-card{position:relative;width:100%;max-width:404px;background:#fff;border-radius:20px;
+    box-shadow:0 20px 60px rgba(76,29,149,.14);padding:34px 32px 22px;box-sizing:border-box}
+  .login-brand{display:flex;align-items:center;gap:13px;margin-bottom:26px}
+  .login-logo{width:52px;height:52px;border-radius:15px;background:linear-gradient(135deg,#7c3aed,#ec4899);
+    color:#fff;font-weight:800;font-size:20px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;
+    box-shadow:0 8px 20px rgba(124,58,237,.32)}
+  .login-brand h1{font-size:21px;margin:0;letter-spacing:.5px}
+  .login-brand p{margin:4px 0 0;font-size:12.5px;color:#909399}
+  .login-field{margin-bottom:15px}
+  .login-label{display:block;font-size:13px;color:#606266;margin-bottom:7px;font-weight:500}
+  .login-row{display:flex;align-items:center;justify-content:space-between;margin:-1px 0 18px}
+  .login-btn{width:100%;height:44px;font-size:15px;letter-spacing:4px;border-radius:10px;border:none;
+    background:linear-gradient(135deg,#7c3aed,#a855f7);box-shadow:0 6px 18px rgba(124,58,237,.28)}
+  .login-btn:hover,.login-btn:focus{background:linear-gradient(135deg,#6d28d9,#9333ea)}
+  .login-btn.is-loading{letter-spacing:1px}
+  .login-foot{margin-top:20px;padding-top:14px;border-top:1px solid #f2f3f7;text-align:center;
+    font-size:11.5px;color:#c0c4cc;line-height:1.8}
+  .boot-card{display:flex;align-items:center;justify-content:center;gap:10px;max-width:320px;padding:26px}
+  /* v7.17 保存文件夹选择弹窗 */
+  .dir-list{height:280px;overflow:auto;border:1px solid #ebeef5;border-radius:8px;padding:6px}
+  .dir-row{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;font-size:13px;color:#303133}
+  .dir-row:hover{background:#f5f3ff;color:#7c3aed}
+  .dir-drive{font-weight:600}
 </style>
 </head>
 <body>
@@ -55,10 +87,13 @@ const Msg = ElementPlus.ElMessage;
 const ElMessageBox = ElementPlus.ElMessageBox;
 const Icons = ElementPlusIconsVue;
 // 显式取出用到的图标（避免模板中裸引用未定义变量导致崩溃）
-const { Folder, Download, MagicStick, UploadFilled, Search, Delete, SwitchButton, Van, Plus, View, Files, RefreshRight } = Icons;
+const { Folder, FolderOpened, FolderAdd, ArrowUp, Download, MagicStick, UploadFilled, Search, Delete, SwitchButton, Van, Plus, View, Files, RefreshRight, User, Lock, Loading } = Icons;
 
 // API 基址：通过 nginx 同源代理时用相对路径；本地以 file:// 直接打开则回退到 localhost:8000
 const API_BASE = location.protocol === 'file:' ? 'http://localhost:8000/api' : '/api';
+
+// 前端版本号（与 backend/app/config.py 的 APP_VERSION 保持一致，用于界面归属标识）
+const APP_VERSION = '7.17';
 
 // ---- 全局 401 拦截：token 过期/无效时任何接口返回 401 → 派发事件让界面自动登出（登录/恢复角色接口除外）----
 const _hpFetch = window.fetch.bind(window);
@@ -226,7 +261,49 @@ const api = {
       body: JSON.stringify(payload)
     });
     if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '生成失败'); }
-    return r.blob();
+    // v7.17：后端若把 Excel 落到了本机目录，会通过 X-Saved-Path 头回传路径
+    return { blob: await r.blob(), savedPath: decodeURIComponent(r.headers.get('X-Saved-Path') || '') };
+  },
+
+  // ---- v7.17 货盘导出目录（保存到本机指定文件夹）----
+  async getOutputConfig(){
+    const r = await fetch(API_BASE + '/output', { headers: { 'Authorization': 'Bearer ' + this.token } });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '读取保存位置失败'); }
+    return r.json();
+  },
+  async setOutputConfig(payload){
+    const r = await fetch(API_BASE + '/output', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '保存设置失败'); }
+    return r.json();
+  },
+  async browseDir(path){
+    const r = await fetch(API_BASE + '/output/browse?path=' + encodeURIComponent(path || ''), {
+      headers: { 'Authorization': 'Bearer ' + this.token }
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '读取目录失败'); }
+    return r.json();
+  },
+  async mkdirDir(parent, name){
+    const r = await fetch(API_BASE + '/output/mkdir', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parent, name })
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '新建文件夹失败'); }
+    return r.json();
+  },
+  async openPath(path){
+    const r = await fetch(API_BASE + '/output/open', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path })
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '打开失败'); }
+    return r.json();
   },
 
   // ---- 货盘记录（持久化）：列表 / 详情 / 重新下载 / 删除 ----
@@ -249,7 +326,7 @@ const api = {
       headers: { 'Authorization': 'Bearer ' + this.token }
     });
     if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || '重新生成失败'); }
-    return r.blob();
+    return { blob: await r.blob(), savedPath: decodeURIComponent(r.headers.get('X-Saved-Path') || '') };
   },
   async deletePlan(id){
     const r = await fetch(API_BASE + '/plan/' + id, {
@@ -323,6 +400,53 @@ function downloadBlobUrl(url, name){
 createApp({
   template: `
   <div>
+  <!-- ① 恢复登录态中：有本地 token 时先向 /auth/me 校验，避免刷新瞬间闪出主界面 -->
+  <div v-if="booting" class="login-screen">
+    <div class="login-blob b1"></div><div class="login-blob b2"></div>
+    <div class="login-card boot-card">
+      <el-icon class="is-loading" style="font-size:20px;color:#7c3aed"><Loading /></el-icon>
+      <span style="font-size:13px;color:#606266">正在恢复登录状态…</span>
+    </div>
+  </div>
+
+  <!-- ② 独立登录页：未登录时整页显示，主界面（含商品/货盘数据）完全不渲染 -->
+  <div v-else-if="!loggedUser" class="login-screen">
+    <div class="login-blob b1"></div><div class="login-blob b2"></div><div class="login-blob b3"></div>
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="login-logo">AI</div>
+        <div>
+          <h1>货盘助手</h1>
+          <p>一键生成公域 / 私域货盘 Excel</p>
+        </div>
+      </div>
+
+      <div class="login-field">
+        <label class="login-label">用户名</label>
+        <el-input v-model="loginForm.username" size="large" clearable :prefix-icon="User"
+                  placeholder="请输入用户名" @keyup.enter="doLogin" />
+      </div>
+      <div class="login-field">
+        <label class="login-label">密码</label>
+        <el-input v-model="loginForm.password" size="large" type="password" show-password :prefix-icon="Lock"
+                  placeholder="请输入密码" @keyup.enter="doLogin" />
+      </div>
+      <div class="login-row">
+        <el-checkbox v-model="remember">记住用户名和密码</el-checkbox>
+        <span style="font-size:12px;color:#c0c4cc">仅保存在本机</span>
+      </div>
+      <el-button type="primary" size="large" class="login-btn" :class="{'is-loading':logging}"
+                 :loading="logging" @click="doLogin">{{ logging ? '登录中…' : '登 录' }}</el-button>
+
+      <div class="login-foot">
+        货盘助手 v{{ appVersion }} · 数据保存在本机<br />
+        忘记密码请联系管理员
+      </div>
+    </div>
+  </div>
+
+  <!-- ③ 主界面 -->
+  <div v-else>
   <div class="hero">
     <div style="display:flex;align-items:center;gap:12px">
       <div class="logo">AI</div>
@@ -334,7 +458,7 @@ createApp({
       <el-tag v-if="loggedUser" type="success" effect="light">{{ loggedUser }} 已登录</el-tag>
       <el-button v-if="loggedUser" @click="logout" :icon="SwitchButton">退出</el-button>
       <el-button @click="uploadsVisible=true; loadUploads()" :icon="Files">上传文件</el-button>
-      <el-button @click="filesVisible=true" :icon="Folder">文件管理</el-button>
+      <el-button @click="filesVisible=true; loadGenerated()" :icon="Folder">文件管理</el-button>
       <el-button type="primary" @click="goStep(hasProducts?1:0)" :icon="MagicStick">开始制作</el-button>
     </div>
   </div>
@@ -508,7 +632,7 @@ createApp({
       </el-table-column>
     </el-table>
     <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">
-      <el-tag type="info">已定价 {{ pricedCount }} / {{ selectedSkus.length }}</el-tag>
+      <el-tag type="info">已定价 {{ pricedCount }} / {{ selectedProducts.length }}</el-tag>
       <div>
         <el-button @click="goStep(1)">← 返回</el-button>
         <el-button type="primary" :disabled="!allPriced" @click="goStep(3)">下一步：利润预览 →</el-button>
@@ -553,6 +677,36 @@ createApp({
     </div>
 
     <div style="margin:14px 0">
+      <el-collapse v-model="saveCollapse" accordion>
+        <el-collapse-item name="save">
+          <template #title>
+            <span style="font-size:13px">💾 保存位置：{{ outCfg.enabled ? '生成后自动存到' : '不自动保存（仅浏览器下载）' }}
+              <b style="color:#7c3aed;font-weight:600">{{ outCfg.enabled ? outCfg.dir : '' }}</b>
+              <el-tag v-if="outCfg.enabled && !outCfg.exists" size="small" type="warning" style="margin-left:6px">目录不存在，生成时自动创建</el-tag>
+              <el-tag v-if="!outCfg.is_local" size="small" type="info" style="margin-left:6px">运行服务的电脑上的目录</el-tag>
+            </span>
+          </template>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <el-switch v-model="outCfg.enabled" active-text="生成后自动保存到本地文件夹" @change="saveOutputCfg" />
+            <el-input v-model="outCfg.dir" style="flex:1;min-width:280px" placeholder="选择或直接粘贴一个文件夹路径" :disabled="!isAdmin">
+              <template #append>
+                <el-button :icon="FolderOpened" :disabled="!isAdmin" @click="openDirPicker">选择文件夹</el-button>
+              </template>
+            </el-input>
+            <el-button :icon="Folder" @click="revealPath(outCfg.dir)">打开</el-button>
+            <el-button :disabled="!isAdmin" @click="resetOutputDir">恢复默认</el-button>
+          </div>
+          <div style="margin-top:8px;font-size:12px;color:#909399;line-height:1.7">
+            · 生成的货盘 Excel 会<b>同时</b>保存到这里一份，浏览器下载照旧（浏览器那份在下载文件夹里）。
+            <span v-if="!outCfg.is_local">· 你的浏览器在另一台电脑上，这个目录是<b>运行服务那台电脑</b>上的路径。</span>
+            <span v-else>· 这里选的就是这台电脑上的真实路径。</span>
+            <br />· 重名不覆盖，自动加 (1)、(2)；「文件管理」里点重新下载会覆盖同一个文件。
+          </div>
+        </el-collapse-item>
+      </el-collapse>
+    </div>
+
+    <div style="margin:14px 0">
       <el-collapse v-model="llmCollapse" accordion>
         <el-collapse-item title="⚙️ 模型 API 配置（预留，不参与生成）" name="llm">
           <el-form :model="llmForm" label-width="110px" label-position="left">
@@ -578,8 +732,11 @@ createApp({
         </el-collapse-item>
       </el-collapse>
     </div>
-    <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">
-      <el-tag type="info">待生成：{{ selectedSkus.length }} 个商品</el-tag>
+    <div v-if="lastSavedPath" style="margin-top:10px;font-size:12px;color:#606266;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span>最近保存：<b style="color:#7c3aed">{{ lastSavedPath }}</b></span>
+      <el-button size="small" :icon="FolderOpened" @click="revealPath(lastSavedPath)">打开文件夹</el-button>
+    </div>
+    <div style="margin-top:16px;display:flex;justify-content:flex-end;align-items:center">
       <div>
         <el-button @click="goStep(3)">← 返回</el-button>
         <el-button type="primary" :loading="generating" :icon="MagicStick" @click="generate">
@@ -589,19 +746,51 @@ createApp({
     </div>
   </div>
 
-  <!-- 登录 -->
-  <el-dialog v-model="loginVisible" title="登录" width="380px" :close-on-click-modal="false" :show-close="false">
-    <el-form label-width="70px">
-      <el-form-item label="用户名"><el-input v-model="loginForm.username" placeholder="admin" /></el-form-item>
-      <el-form-item label="密码"><el-input v-model="loginForm.password" type="password" show-password placeholder="admin123" @keyup.enter="doLogin" /></el-form-item>
-    </el-form>
+  <!-- 登录已改为独立整页界面（见模板顶部），此处不再保留弹窗 -->
+
+  <!-- v7.17 选择保存文件夹（浏览的是「运行服务这台电脑」的目录） -->
+  <el-dialog v-model="dirPickerVisible" title="📂 选择货盘保存文件夹" width="660px" :close-on-click-modal="false">
+    <div v-if="!outCfg.is_local" style="margin-bottom:10px">
+      <el-alert type="warning" :closable="false" show-icon
+                title="注意：下面浏览的是「运行服务那台电脑」上的文件夹" />
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <el-button size="small" :icon="ArrowUp" :disabled="!dirState.path" @click="browseTo(dirState.parent)">上一级</el-button>
+      <el-button size="small" :disabled="!dirState.path" @click="browseTo('')">此电脑</el-button>
+      <el-button size="small" type="primary" plain :icon="FolderAdd"
+                 :disabled="!dirState.path || !isAdmin" @click="newFolder">新建文件夹</el-button>
+      <el-button v-if="dirState.suggest" size="small" @click="browseTo(dirState.suggest)"
+                 :disabled="!dirState.suggest_exists">跳到默认目录</el-button>
+    </div>
+    <el-input v-model="dirPathInput" size="small" style="margin-bottom:10px"
+              placeholder="也可以直接粘贴完整路径，回车跳转" @keyup.enter="browseTo(dirPathInput)">
+      <template #prepend>路径</template>
+      <template #append><el-button size="small" @click="browseTo(dirPathInput)">转到</el-button></template>
+    </el-input>
+    <div class="dir-list" v-loading="dirLoading">
+      <div v-if="!dirState.path" class="dir-row dir-drive" v-for="d in dirState.drives" :key="d.path"
+           @click="browseTo(d.path)">
+        <el-icon><FolderOpened /></el-icon><span>{{ d.name }}</span>
+      </div>
+      <div v-if="dirState.path" class="dir-row" v-for="d in dirState.dirs" :key="d.path"
+           @click="browseTo(d.path)" @dblclick="choosePath(d.path)">
+        <el-icon><Folder /></el-icon><span>{{ d.name }}</span>
+      </div>
+      <el-empty v-if="dirState.path && !dirState.dirs.length" description="这个文件夹里没有子文件夹" :image-size="70" />
+    </div>
+    <div style="margin-top:10px;font-size:12px;color:#909399;line-height:1.7">
+      单击文件夹进入下一层，双击直接选定该文件夹。
+      <br />当前将保存到：<b style="color:#7c3aed">{{ dirState.path || '（未选择）' }}</b>
+      <span v-if="dirState.writable === false" style="color:#e6a23c">（该目录可能没有写入权限）</span>
+    </div>
     <template #footer>
-      <el-button type="primary" :loading="logging" @click="doLogin">登录</el-button>
+      <el-button @click="dirPickerVisible=false">取消</el-button>
+      <el-button type="primary" :disabled="!dirState.path" @click="choosePath(dirState.path)">选定此文件夹</el-button>
     </template>
   </el-dialog>
 
   <!-- 文件管理 -->
-  <el-dialog v-model="filesVisible" title="📁 文件管理" width="680px">
+  <el-dialog v-model="filesVisible" title="📁 文件管理" width="1020px">
     <el-table :data="generated" border stripe>
       <el-table-column prop="name" label="文件名称" min-width="150" />
       <el-table-column label="类型" width="90" align="center">
@@ -610,12 +799,20 @@ createApp({
         </template>
       </el-table-column>
       <el-table-column prop="time" label="生成时间" width="150" />
-      <el-table-column prop="rows" label="商品数" width="70" align="center" />
-      <el-table-column label="操作" width="210" align="center">
+      <el-table-column prop="rows" label="商品数" width="72" align="center" />
+      <el-table-column label="本地保存位置" min-width="180" show-overflow-tooltip>
+        <template #default="{row}">
+          <span v-if="row.saved_path" style="font-size:12px;color:#606266">{{ row.saved_path }}</span>
+          <el-tag v-else-if="outCfg.enabled" size="small" type="info">未保存（可能是旧记录）</el-tag>
+          <el-tag v-else size="small" type="info">未开启自动保存</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="300" align="center">
         <template #default="{row}">
           <el-button size="small" type="primary" plain :icon="View" @click="openPreview(row)">预览</el-button>
           <el-button size="small" :icon="Download" @click="downloadGen(row)">下载</el-button>
-          <el-button size="small" type="danger" :icon="Delete" @click="deleteGen(row)">删除</el-button>
+          <el-button v-if="row.saved_path" size="small" :icon="FolderOpened" @click="revealPath(row.saved_path)">打开</el-button>
+          <el-button size="small" type="danger" :icon="Delete" @click="deleteGen(row)" />
         </template>
       </el-table-column>
     </el-table>
@@ -731,6 +928,7 @@ createApp({
       </div>
     </template>
   </el-dialog>
+  </div><!-- /③ 主界面 v-else -->
 
   </div>
   `,
@@ -769,6 +967,14 @@ createApp({
     const llmForm = reactive({ base_url: '', api_key: '', model: '' });
     const llmSaving = ref(false);
     const llmStatus = ref(null);
+    // v7.17 货盘保存位置（生成后自动落到本机文件夹）
+    const saveCollapse = ref('save');   // 默认展开，方便一眼看到存哪
+    const outCfg = reactive({ enabled: true, dir: '', default_dir: '', exists: true, is_local: true });
+    const dirPickerVisible = ref(false);
+    const dirLoading = ref(false);
+    const dirState = reactive({ path: '', parent: '', drives: [], dirs: [], suggest: '', suggest_exists: false, writable: null });
+    const dirPathInput = ref('');
+    const lastSavedPath = ref('');   // 最近一次成功落盘的货盘路径
     // §6 利润扣减：平台服务费费率 / 税费率（输入按 % 计，内部换算为小数）
     const feeRate = ref(6);
     const taxRate = ref(1);
@@ -776,9 +982,18 @@ createApp({
     const loggedUser = ref(localStorage.getItem('hp_user') || '');
     const userRole = ref(localStorage.getItem('hp_role') || '');
     const isAdmin = computed(() => userRole.value === 'admin');
-    const loginVisible = ref(!loggedUser.value);
-    const loginForm = reactive({ username: 'admin', password: 'admin123' });
+    // v7.16 独立登录页：记住用户名 / 密码（Base64 编码后存 localStorage，仅本机自用，不作为安全边界）
+    const REMEMBER_KEY = 'hp_remember';
+    const b64e = (s) => { try { return btoa(unescape(encodeURIComponent(s))); } catch(e){ return ''; } };
+    const b64d = (s) => { try { return decodeURIComponent(escape(atob(s))); } catch(e){ return ''; } };
+    const remember = ref(localStorage.getItem(REMEMBER_KEY) === '1');
+    const loginForm = reactive({
+      username: remember.value ? b64d(localStorage.getItem('hp_saved_user') || '') : '',
+      password: remember.value ? b64d(localStorage.getItem('hp_saved_pwd') || '') : ''
+    });
     const logging = ref(false);
+    // 有本地 token 时先向 /auth/me 校验，通过后才进主界面 —— 避免刷新/登录过期瞬间闪出主界面数据
+    const booting = ref(!!(api.token && loggedUser.value));
 
     const hasProducts = computed(() => products.value.length > 0);
     const categories = computed(() => [...new Set(products.value.map(p => p.category))]);
@@ -823,8 +1038,11 @@ createApp({
       }
     }
     const priced = (pid) => Number(pricing[pid]) > 0;
-    const pricedCount = computed(() => selectedSkus.value.filter(s => priced(s)).length);
-    const allPriced = computed(() => selectedSkus.value.length > 0 && pricedCount.value === selectedSkus.value.length);
+    // 口径统一：一律以 selectedProducts（真实提交集合）为准，不再用 selectedSkus。
+    // 两者正常相等，但若选择态里残留了商品库中已不存在的 id，用 selectedSkus 会让
+    // allPriced 永远不成立 → 点「提交后端生成」一直报「请先完成全部商品定价」，卡死。
+    const pricedCount = computed(() => selectedProducts.value.filter(p => priced(p.id)).length);
+    const allPriced = computed(() => selectedProducts.value.length > 0 && pricedCount.value === selectedProducts.value.length);
 
     const previewRows = computed(() => selectedProducts.value.map(p => {
       const c = compute(p.id);
@@ -849,22 +1067,22 @@ createApp({
 
     function batchApply(){
       if (batchVal.value == null) { Msg.warning('请输入批量数值'); return; }
-      selectedSkus.value.forEach(s => pricing[s] = batchVal.value);
-      Msg.success('已应用到 ' + selectedSkus.value.length + ' 个商品');
+      selectedProducts.value.forEach(p => pricing[p.id] = batchVal.value);
+      Msg.success('已应用到 ' + selectedProducts.value.length + ' 个商品');
     }
 
     function markupApplyAll(){
       if (markupAllVal.value == null) { Msg.warning('请输入成本上调%'); return; }
       if (planType.value !== 'private') return;
-      selectedSkus.value.forEach(s => markup[s] = markupAllVal.value);
-      Msg.success('已为 ' + selectedSkus.value.length + ' 个商品设置成本上调 ' + markupAllVal.value + '%（可再单独调整）');
+      selectedProducts.value.forEach(p => markup[p.id] = markupAllVal.value);
+      Msg.success('已为 ' + selectedProducts.value.length + ' 个商品设置成本上调 ' + markupAllVal.value + '%（可再单独调整）');
     }
 
     function cutApplyAll(){
       if (commissionCut.value == null) { Msg.warning('请输入佣金下调（百分点）'); return; }
       if (planType.value !== 'public') return;
-      selectedSkus.value.forEach(s => cutItem[s] = commissionCut.value);
-      Msg.success('已为 ' + selectedSkus.value.length + ' 个商品设置佣金下调 ' + commissionCut.value + ' 个点（可再单独调整）');
+      selectedProducts.value.forEach(p => cutItem[p.id] = commissionCut.value);
+      Msg.success('已为 ' + selectedProducts.value.length + ' 个商品设置佣金下调 ' + commissionCut.value + ' 个点（可再单独调整）');
     }
 
     function mapProduct(r){
@@ -894,6 +1112,11 @@ createApp({
         const d = await api.listProducts();
         products.value = d.rows.map(mapProduct);
         merchants.value = d.merchants;
+        // 商品库是「整体替换」式的（上传/恢复会先清空再插入，主键 id 全部换新）→
+        // 这里兜底剔掉选择态里已不存在的 id，避免残留 id 让「已定价」判断永远不通过。
+        const alive = new Set(products.value.map(p => p.id));
+        const kept = selectedSkus.value.filter(id => alive.has(id));
+        if (kept.length !== selectedSkus.value.length) selectedSkus.value = kept;
       } catch(e){ Msg.error(e.message); }
     }
 
@@ -905,28 +1128,53 @@ createApp({
         userRole.value = d.role || 'user';
         localStorage.setItem('hp_user', loginForm.username);
         localStorage.setItem('hp_role', userRole.value);
-        loginVisible.value = false;
+        // 记住用户名 / 密码：勾选则本地留存，取消勾选则清掉历史留存
+        if (remember.value) {
+          localStorage.setItem(REMEMBER_KEY, '1');
+          localStorage.setItem('hp_saved_user', b64e(loginForm.username));
+          localStorage.setItem('hp_saved_pwd', b64e(loginForm.password));
+        } else {
+          localStorage.removeItem(REMEMBER_KEY);
+          localStorage.removeItem('hp_saved_user');
+          localStorage.removeItem('hp_saved_pwd');
+        }
         Msg.success('登录成功');
         await refreshProducts();
         await loadLlmConfig();
+        await loadOutputCfg();
         await loadGenerated();   // 货盘记录（持久化）
       } catch(e){ Msg.error(e.message); }
       logging.value = false;
     }
     // 刷新页面时用 /api/auth/me 恢复角色（避免老登录态丢失 hp_role 后误判为普通用户）
     async function loadMe(){
-      if (!api.token) return;
+      if (!api.token) { booting.value = false; return; }
+      let ok = false;
       try {
         const r = await fetch(API_BASE + '/auth/me', { headers: { 'Authorization': 'Bearer ' + api.token } });
-        if (r.ok) { const d = await r.json(); userRole.value = d.role || 'user'; localStorage.setItem('hp_role', userRole.value); }
+        if (r.ok) {
+          const d = await r.json();
+          userRole.value = d.role || 'user';
+          localStorage.setItem('hp_role', userRole.value);
+          ok = true;
+        }
         else if (r.status === 401) logout(true);   // token 已过期：自动回登录页，不再静默停留假登录态
       } catch(e){ /* 网络异常保持现状 */ }
+      finally { booting.value = false; }   // 无论结果如何都要放行，避免卡在恢复态
+      // 刷新页面后补齐数据（此前只恢复角色，商品库/货盘记录要手动操作才会加载）
+      if (ok) {
+        await refreshProducts();
+        await loadLlmConfig();
+        await loadOutputCfg();
+        await loadGenerated();
+      }
     }
-    if (loggedUser.value) loadMe();
+    if (loggedUser.value) loadMe(); else booting.value = false;
     function logout(silent){
       api.token = ''; loggedUser.value = ''; userRole.value = '';
       localStorage.removeItem('hp_token'); localStorage.removeItem('hp_user'); localStorage.removeItem('hp_role');
-      products.value = []; loginVisible.value = true;
+      products.value = [];
+      if (!remember.value) loginForm.password = '';   // 未勾选记住密码 → 退出时清掉输入框里的密码
       Msg.info(silent ? '登录已过期，请重新登录' : '已退出登录');
     }
     // 任何接口 401（token 过期/无效）→ 自动退回登录页（手动退出走 logout() 不受影响）
@@ -995,7 +1243,7 @@ createApp({
             commission_cut: Number(cutItem[p.id]) || 0  // v7.4 公域逐商品佣金下调（百分点）
           };
         });
-        const blob = await api.generatePlan({
+        const res = await api.generatePlan({
           name: fileName.value || '新货盘',
           title: (planTitle.value || '').trim(),
           commission_cut: Number(commissionCut.value) || 0,
@@ -1005,8 +1253,16 @@ createApp({
           fee_rate: (Number(feeRate.value) || 0) / 100,
           items
         });
-        downloadBlob(blob, fname);
-        Msg.success('货盘已生成并下载：' + fname);
+        downloadBlob(res.blob, fname);
+        // v7.17：落盘成功时提示实际保存路径，并提供「打开文件夹」
+        if (res.savedPath) {
+          Msg.success({ message: '货盘已生成，已保存到：' + res.savedPath, duration: 5000 });
+          lastSavedPath.value = res.savedPath;
+        } else if (outCfg.enabled) {
+          Msg.warning({ message: '货盘已生成并下载，但保存到本地文件夹失败（目录不可写？）：' + outCfg.dir, duration: 6000 });
+        } else {
+          Msg.success('货盘已生成并下载：' + fname);
+        }
         // 同步后端货盘记录（v7.9：去掉生成后自动弹出的卡片墙预览）
         await loadGenerated();
       } catch(err){ Msg.error('生成失败：' + err.message); }
@@ -1020,7 +1276,8 @@ createApp({
         generated.value = (d || []).map(p => ({
           id: p.id, name: p.name + '.xlsx', time: p.create_time, rows: p.rows,
           commission_cut: p.commission_cut, cost_mode: p.cost_mode,
-          plan_type: p.plan_type || 'public', tax_rate: p.tax_rate || 0
+          plan_type: p.plan_type || 'public', tax_rate: p.tax_rate || 0,
+          saved_path: p.saved_path || '', saved_exists: !!p.saved_exists   // v7.17 本地落盘路径
         }));
       } catch(e){ Msg.error(e.message); }
     }
@@ -1039,14 +1296,77 @@ createApp({
     async function downloadGen(row){
       try {
         if (row.id && String(row.id).indexOf('g') !== 0) {
-          const blob = await api.downloadPlan(row.id);
-          downloadBlob(blob, (row.name || '货盘').replace(/\.xlsx$/i,'') + '.xlsx');
+          const r = await api.downloadPlan(row.id);
+          downloadBlob(r.blob, (row.name || '货盘').replace(/\.xlsx$/i,'') + '.xlsx');
+          if (r.savedPath) {
+            row.saved_path = r.savedPath;
+            Msg.success('已重新生成，并覆盖保存到：' + r.savedPath);
+          }
         } else if (row.url) {
           downloadBlobUrl(row.url, row.name || '货盘.xlsx');
         } else {
           Msg.warning('该记录缺少下载数据');
         }
       } catch(e){ Msg.error(e.message); }
+    }
+
+    // ---- v7.17 保存位置（导出目录）----
+    async function loadOutputCfg(){
+      try {
+        const d = await api.getOutputConfig();
+        Object.assign(outCfg, d);
+      } catch(e){ /* 非关键配置，失败静默 */ }
+    }
+    async function saveOutputCfg(){
+      if (!isAdmin.value) return;
+      try {
+        const d = await api.setOutputConfig({ enabled: outCfg.enabled, dir: outCfg.dir });
+        Object.assign(outCfg, d);
+        Msg.success(outCfg.enabled ? '已开启：生成后自动保存到该文件夹' : '已关闭自动保存');
+      } catch(e){ Msg.error(e.message); }
+    }
+    async function resetOutputDir(){
+      try {
+        const d = await api.setOutputConfig({ dir: outCfg.default_dir });
+        Object.assign(outCfg, d);
+        Msg.success('已恢复默认目录');
+      } catch(e){ Msg.error(e.message); }
+    }
+    async function openDirPicker(){
+      dirPickerVisible.value = true;
+      await browseTo(outCfg.exists ? outCfg.dir : '');
+    }
+    async function browseTo(path){
+      dirLoading.value = true;
+      try {
+        const d = await api.browseDir(path || '');
+        Object.assign(dirState, d);
+        dirPathInput.value = d.path || '';
+      } catch(e){ Msg.error(e.message); }
+      dirLoading.value = false;
+    }
+    async function choosePath(p){
+      try {
+        const d = await api.setOutputConfig({ enabled: true, dir: p });
+        Object.assign(outCfg, d);
+        dirPickerVisible.value = false;
+        Msg.success('保存位置已设为：' + p);
+      } catch(e){ Msg.error(e.message); }
+    }
+    async function newFolder(){
+      try {
+        const { value } = await ElMessageBox.prompt('新文件夹名称', '在此新建文件夹', {
+          inputPlaceholder: '如：货盘导出', inputValidator: v => (v && v.trim()) ? true : '请输入名称'
+        });
+        const d = await api.mkdirDir(dirState.path, value.trim());
+        Msg.success('已创建：' + d.path);
+        await browseTo(dirState.path);
+      } catch(e){ if (e !== 'cancel' && e !== 'close') Msg.error(e.message || e); }
+    }
+    async function revealPath(p){
+      if (!p) { Msg.warning('还没有保存位置'); return; }
+      try { await api.openPath(p); }
+      catch(e){ Msg.error(e.message); }
     }
     async function deleteGen(row){
       try {
@@ -1130,9 +1450,10 @@ createApp({
       merchantInput, merchantFilter, merchants,
       feeRate, taxRate,
       fileName, planTitle, planType, planTaxPct, commissionCut, costMode, generated, filesVisible, generating, llmCollapse, llmForm, llmSaving, llmStatus,
+      saveCollapse, outCfg, dirPickerVisible, dirLoading, dirState, dirPathInput, lastSavedPath,
       uploadsVisible, uploads,
       previewVisible, previewPlan, previewItems, previewLoading,
-      loggedUser, loginVisible, loginForm, logging,
+      loggedUser, loginForm, logging, remember, booting, appVersion: APP_VERSION,
       isAdmin,
       hasProducts, categories, filtered, allFilteredSelected, selectedProducts,
       priced, pricedCount, allPriced, previewRows, summary,
@@ -1141,7 +1462,9 @@ createApp({
       doLogin, logout, loadSample, onUploadChange, exportTemplate, generate, downloadGen, deleteGen, loadLlmConfig, saveLlmConfig, goStep,
       loadUploads, downloadUploadFile, restoreUpload, deleteUpload, fmtSize,
       loadGenerated, openPreview,
-      Folder, Download, MagicStick, UploadFilled, Search, Delete, SwitchButton, Plus, View, Files, RefreshRight
+      loadOutputCfg, saveOutputCfg, resetOutputDir, openDirPicker, browseTo, choosePath, newFolder, revealPath,
+      Folder, FolderOpened, FolderAdd, ArrowUp, Download, MagicStick, UploadFilled, Search, Delete, SwitchButton, Plus, View, Files, RefreshRight,
+      User, Lock, Loading
     };
   }
 }).use(ElementPlus, window.ElementPlusLocaleZhCn ? { locale: window.ElementPlusLocaleZhCn } : {})

@@ -1,9 +1,11 @@
+import os
 import urllib.parse
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from ..database import get_db
 from .. import models, schemas, security
 from ..services.excel import generate_plan_excel
+from . import output as output_router
 
 router = APIRouter(prefix="/api/plan", tags=["plan"])
 
@@ -93,16 +95,25 @@ def generate(
         title=plan_title,
     )
     fname = urllib.parse.quote(file_name + ".xlsx")
+    # v7.17：开启「保存到本地目录」时，先把 Excel 落到本机（桌面端 = 用户自己的电脑）
+    saved = output_router.save_plan_file(buf, file_name)
+    if saved:
+        plan.saved_path = saved
+        db.commit()
     return Response(
         content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fname}"},
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{fname}",
+            **output_router.saved_path_header(saved),
+        },
     )
 
 
 def _plan_out(p: models.ProductPlan, db: Session):
     """货盘列表项。"""
     rows = db.query(models.ProductPlanItem).filter_by(plan_id=p.id).count()
+    sp = getattr(p, "saved_path", None) or ""
     return {
         "id": p.id,
         "name": p.name,
@@ -114,6 +125,9 @@ def _plan_out(p: models.ProductPlan, db: Session):
         "cost_mode": p.cost_mode or "daifa",
         "plan_type": p.plan_type or "public",
         "tax_rate": _num(p.tax_rate),
+        # v7.17：本地落盘路径 + 是否还在（文件可能被用户挪走/删掉）
+        "saved_path": sp,
+        "saved_exists": bool(sp) and os.path.exists(sp),
     }
 
 
@@ -240,10 +254,18 @@ def plan_download(    plan_id: int,
         title=(p.title or "").strip(),
     )
     fname = urllib.parse.quote((p.name or "货盘") + ".xlsx")
+    # v7.17：重新下载也落盘 —— 若上次已有落盘文件则原地覆盖，避免堆出 (1)(2)(3)
+    saved = output_router.save_plan_file(buf, p.name or "货盘", prefer_path=getattr(p, "saved_path", "") or "")
+    if saved and saved != (getattr(p, "saved_path", None) or ""):
+        p.saved_path = saved
+        db.commit()
     return Response(
         content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fname}"},
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{fname}",
+            **output_router.saved_path_header(saved),
+        },
     )
 
 
